@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.1.11312.151
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "URead2", "URead2\URead2.csproj", "{57F34000-20FF-4618-ABE3-BF77ACBC1A10}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{57F34000-20FF-4618-ABE3-BF77ACBC1A10}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{57F34000-20FF-4618-ABE3-BF77ACBC1A10}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{57F34000-20FF-4618-ABE3-BF77ACBC1A10}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{57F34000-20FF-4618-ABE3-BF77ACBC1A10}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E84AAEC7-77E5-471D-96E6-6AF9E26437F9}
+	EndGlobalSection
+EndGlobal
