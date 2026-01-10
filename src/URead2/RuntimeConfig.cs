@@ -6,5 +6,6 @@ namespace URead2;
 public record RuntimeConfig
 {
     public required string PaksPath { get; init; }
+    public string? UsmapPath { get; init; }
     public byte[]? AesKey { get; init; }
 }
