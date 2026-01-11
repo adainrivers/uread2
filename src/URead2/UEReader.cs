@@ -2,7 +2,11 @@ using URead2.Assets;
 using URead2.Assets.Abstractions;
 using URead2.Assets.Models;
 using URead2.Containers;
+using URead2.Deserialization;
+using URead2.Deserialization.Abstractions;
+using URead2.Deserialization.TypeMappings;
 using URead2.Profiles.Abstractions;
+using ZenPackageMetadataReader = URead2.Assets.ZenPackageMetadataReader;
 
 namespace URead2;
 
@@ -12,9 +16,9 @@ namespace URead2;
 /// </summary>
 public class UEReader : IDisposable
 {
-    private readonly ContainerRegistry _containers;
-    private readonly AssetRegistry _assets;
     private readonly IProfile _profile;
+    private PackageResolver? _packageResolver;
+    private TypeResolver? _typeResolver;
     private bool _disposed;
 
     public UEReader(RuntimeConfig config, IProfile profile)
@@ -23,25 +27,69 @@ public class UEReader : IDisposable
         ArgumentNullException.ThrowIfNull(profile);
 
         _profile = profile;
-        _containers = new ContainerRegistry(config, profile);
-        _assets = new AssetRegistry(config, profile, _containers);
+
+        // Initialize singleton registries
+        ContainerRegistry.Initialize(config, profile);
+        AssetRegistry.Initialize(config, profile);
+
+        // Auto-configure type resolution from config
+        ConfigureTypeResolution(config);
     }
+
+    /// <summary>
+    /// Configures type resolution from runtime config.
+    /// Loads usmap and global data if available.
+    /// </summary>
+    private void ConfigureTypeResolution(RuntimeConfig config)
+    {
+        // Load usmap type mappings if configured
+        if (!string.IsNullOrEmpty(config.UsmapPath) && File.Exists(config.UsmapPath))
+        {
+            try
+            {
+                _typeResolver = TypeResolver.FromUsmapFile(config.UsmapPath, _profile.Decompressor);
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Warning(ex, "Failed to load usmap from: {Path}", config.UsmapPath);
+            }
+        }
+
+        // Load script object index for import resolution
+        var scriptObjectIndex = Containers.ScriptObjectIndex;
+        if (scriptObjectIndex != null)
+        {
+            // Inject into ZenPackageMetadataReader for import resolution
+            if (_profile.ZenPackageReader is ZenPackageMetadataReader zenReader)
+            {
+                zenReader.ScriptObjectIndex = scriptObjectIndex;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the type resolver for deserializing properties.
+    /// Returns the usmap-based resolver if configured, otherwise an empty resolver.
+    /// </summary>
+    public TypeResolver TypeResolver => _typeResolver ?? TypeResolver.Empty;
 
     /// <summary>
     /// Gets direct access to the container registry.
     /// </summary>
-    public ContainerRegistry Containers => _containers;
+    public ContainerRegistry Containers => ContainerRegistry.Instance
+        ?? throw new InvalidOperationException("ContainerRegistry not initialized");
 
     /// <summary>
     /// Gets direct access to the asset registry.
     /// </summary>
-    public AssetRegistry Assets => _assets;
+    public AssetRegistry Assets => AssetRegistry.Instance
+        ?? throw new InvalidOperationException("AssetRegistry not initialized");
 
     /// <summary>
     /// Gets all entries from all containers.
     /// </summary>
     public IEnumerable<IAssetEntry> GetEntries(Func<string, bool>? containerPathFilter = null)
-        => _containers.GetEntries(containerPathFilter);
+        => Containers.GetEntries(containerPathFilter);
 
     /// <summary>
     /// Gets all assets grouped with their companion files.
@@ -49,64 +97,136 @@ public class UEReader : IDisposable
     /// </summary>
     public IEnumerable<AssetGroup> GetAssets(Func<string, bool>? pathFilter = null)
         => pathFilter == null
-            ? _assets.GetAssetGroups()
-            : _assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
+            ? Assets.GetAssetGroups()
+            : Assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
 
     /// <summary>
     /// Opens a stream to read entry content.
     /// </summary>
-    public Stream OpenRead(IAssetEntry entry) => _assets.OpenRead(entry);
+    public Stream OpenRead(IAssetEntry entry) => Assets.OpenRead(entry);
 
     /// <summary>
     /// Reads asset metadata.
     /// </summary>
-    public AssetMetadata? ReadMetadata(IAssetEntry entry) => _assets.ReadMetadata(entry);
+    public AssetMetadata? ReadMetadata(IAssetEntry entry) => Assets.ReadMetadata(entry);
 
     /// <summary>
     /// Reads asset metadata.
     /// </summary>
-    public AssetMetadata? ReadMetadata(AssetGroup asset) => _assets.ReadMetadata(asset);
+    public AssetMetadata? ReadMetadata(AssetGroup asset) => Assets.ReadMetadata(asset);
 
     /// <summary>
     /// Reads export binary data.
     /// </summary>
     public ExportData ReadExportData(IAssetEntry entry, AssetExport export)
-        => _assets.ReadExportData(entry, export);
+        => Assets.ReadExportData(entry, export);
 
     /// <summary>
     /// Reads export binary data.
     /// </summary>
     public ExportData ReadExportData(AssetGroup asset, AssetExport export)
-        => _assets.ReadExportData(asset, export);
+        => Assets.ReadExportData(asset, export);
 
     /// <summary>
     /// Preloads all asset metadata in parallel and builds the global export index.
     /// Call once at startup for fastest cross-package access.
     /// </summary>
     public void PreloadAllMetadata(int? maxDegreeOfParallelism = null, Action<int, int>? progress = null)
-        => _assets.PreloadAllMetadata(maxDegreeOfParallelism, progress);
+        => Assets.PreloadAllMetadata(maxDegreeOfParallelism, progress);
 
     /// <summary>
     /// Resolves an export by its full path. O(1) lookup after PreloadAllMetadata.
     /// </summary>
     public (AssetMetadata Metadata, AssetExport Export)? ResolveExport(string exportPath)
-        => _assets.ResolveExport(exportPath);
+        => Assets.ResolveExport(exportPath);
 
     /// <summary>
     /// Number of cached metadata entries.
     /// </summary>
-    public int MetadataCacheCount => _assets.MetadataCacheCount;
+    public int MetadataCacheCount => Assets.MetadataCacheCount;
 
     /// <summary>
     /// Number of indexed exports for cross-package resolution.
     /// </summary>
-    public int ExportIndexCount => _assets.ExportIndexCount;
+    public int ExportIndexCount => Assets.ExportIndexCount;
+
+    /// <summary>
+    /// Gets the package resolver for cross-package reference resolution.
+    /// Created lazily on first access.
+    /// </summary>
+    public PackageResolver PackageResolver
+    {
+        get
+        {
+            _packageResolver ??= new PackageResolver();
+            return _packageResolver;
+        }
+    }
+
+    /// <summary>
+    /// Gets the profile used by this reader.
+    /// </summary>
+    public IProfile Profile => _profile;
+
+    /// <summary>
+    /// Creates a PropertyReadContext for deserializing an asset.
+    /// Includes cross-package resolution support if metadata has been preloaded.
+    /// </summary>
+    /// <param name="metadata">The asset metadata.</param>
+    /// <param name="enableCrossPackageResolution">
+    /// If true, enables cross-package import resolution.
+    /// Requires PreloadAllMetadata() to have been called for best results.
+    /// </param>
+    public PropertyReadContext CreateReadContext(AssetMetadata metadata, bool enableCrossPackageResolution = true)
+    {
+        return new PropertyReadContext
+        {
+            NameTable = metadata.NameTable,
+            TypeResolver = TypeResolver,
+            Imports = metadata.Imports,
+            Exports = metadata.Exports,
+            PackagePath = GetPackagePath(metadata.Name),
+            PackageResolver = enableCrossPackageResolution ? PackageResolver : null
+        };
+    }
+
+    /// <summary>
+    /// Creates a PropertyReadContext for deserializing an asset with a custom type resolver.
+    /// </summary>
+    public PropertyReadContext CreateReadContext(AssetMetadata metadata, ITypeResolver typeResolver, bool enableCrossPackageResolution = true)
+    {
+        return new PropertyReadContext
+        {
+            NameTable = metadata.NameTable,
+            TypeResolver = typeResolver,
+            Imports = metadata.Imports,
+            Exports = metadata.Exports,
+            PackagePath = GetPackagePath(metadata.Name),
+            PackageResolver = enableCrossPackageResolution ? PackageResolver : null
+        };
+    }
+
+    /// <summary>
+    /// Extracts the package path from an asset name/path.
+    /// </summary>
+    private static string? GetPackagePath(string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return null;
+
+        // Remove extension
+        var lastDot = name.LastIndexOf('.');
+        if (lastDot > 0)
+            name = name[..lastDot];
+
+        return name;
+    }
 
     public void Dispose()
     {
         if (!_disposed)
         {
-            _containers.Dispose();
+            Containers.Dispose();
             (_profile as IDisposable)?.Dispose();
             _disposed = true;
         }

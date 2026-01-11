@@ -15,9 +15,9 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     private const int ImportEntrySize = 8;
 
     /// <summary>
-    /// Global data for resolving script class names.
+    /// Script object index for resolving script class names.
     /// </summary>
-    public GlobalDataReader.GlobalData? GlobalData { get; set; }
+    public ScriptObjectIndex? ScriptObjectIndex { get; set; }
 
     public virtual AssetMetadata? ReadMetadata(Stream stream, string name)
     {
@@ -240,7 +240,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         switch (type)
         {
             case 1: // ScriptImport - resolve from global script objects
-                var resolved = GlobalDataReader.ResolveScriptImport(GlobalData, typeAndId);
+                var resolved = ScriptObjectIndex?.ResolveImport(typeAndId);
                 name = resolved ?? $"ScriptImport_0x{value:X}";
                 className = resolved != null ? name : "ScriptObject";
                 packageName = "/Script";
@@ -301,7 +301,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
 
         // ClassIndex (FPackageObjectIndex: 8 bytes)
         ulong classRaw = archive.ReadUInt64();
-        string className = ResolveClassName(classRaw, imports, GlobalData);
+        string className = ResolveClassName(classRaw, imports, ScriptObjectIndex);
 
         // Skip remaining fields (SuperIndex, TemplateIndex, PublicExportHash, ObjectFlags, FilterFlags)
         archive.Position = startPos + ExportEntrySize;
@@ -316,7 +316,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic);
     }
 
-    private static string ResolveClassName(ulong classRaw, AssetImport[] imports, GlobalDataReader.GlobalData? globalData)
+    private static string ResolveClassName(ulong classRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
     {
         if (classRaw == ~0UL)
             return "Object";
@@ -328,7 +328,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             case 0: // Export - class is in this package
                 return "LocalClass";
             case 1: // ScriptImport - resolve from global data
-                var resolved = GlobalDataReader.ResolveScriptImport(globalData, classRaw);
+                var resolved = scriptObjectIndex?.ResolveImport(classRaw);
                 return resolved ?? "ScriptClass";
             case 2: // PackageImport
                 uint pkgIdx = (uint)((classRaw & 0x3FFFFFFFFFFFFFFFUL) >> 32);

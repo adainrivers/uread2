@@ -8,7 +8,6 @@ using URead2.Crypto;
 using URead2.Deserialization;
 using URead2.Deserialization.Abstractions;
 using URead2.Deserialization.Properties;
-using URead2.Deserialization.TypeMappings;
 using URead2.Profiles.Abstractions;
 
 namespace URead2.Profiles.Engine;
@@ -32,7 +31,6 @@ public class UE_BaseProfile : IProfile
     public virtual IExportDataReader? ExportDataReader { get; } = new ExportDataReader();
     public virtual IBulkDataReader? BulkDataReader { get; } = new BulkDataReader();
 
-    public virtual ITypeResolver TypeResolver { get; } = NullTypeResolver.Instance;
     public virtual IPropertyReader PropertyReader { get; } = new PropertyReader();
-    public virtual IAssetSchemaReader? AssetSchemaReader => new AssetSchemaReader(TypeResolver, PropertyReader);
+    public virtual IAssetSchemaReader? AssetSchemaReader { get; } = new AssetSchemaReader();
 }

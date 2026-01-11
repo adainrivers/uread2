@@ -13,7 +13,6 @@ namespace URead2.Assets;
 public class AssetRegistry
 {
     private readonly RuntimeConfig _config;
-    private readonly ContainerRegistry _containers;
 
     // Cached reader references
     private readonly IAssetEntryReader? _pakEntryReader;
@@ -32,10 +31,15 @@ public class AssetRegistry
     // Global export index for cross-package resolution: "PackagePath.ExportName" -> (Metadata, ExportIndex)
     private ConcurrentDictionary<string, (AssetMetadata Metadata, int ExportIndex)>? _exportIndex;
 
-    public AssetRegistry(RuntimeConfig config, IProfile profile, ContainerRegistry containers)
+    // Singleton instance for global access (e.g., from PackageResolver)
+    public static AssetRegistry? Instance { get; private set; }
+
+    private static ContainerRegistry Containers => ContainerRegistry.Instance
+        ?? throw new InvalidOperationException("ContainerRegistry not initialized");
+
+    private AssetRegistry(RuntimeConfig config, IProfile profile)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
-        _containers = containers ?? throw new ArgumentNullException(nameof(containers));
 
         // Cache reader references from profile
         _pakEntryReader = profile.PakEntryReader;
@@ -43,6 +47,15 @@ public class AssetRegistry
         _uAssetReader = profile.UAssetReader;
         _zenPackageReader = profile.ZenPackageReader;
         _exportDataReader = profile.ExportDataReader;
+    }
+
+    /// <summary>
+    /// Initializes the singleton instance.
+    /// </summary>
+    public static AssetRegistry Initialize(RuntimeConfig config, IProfile profile)
+    {
+        Instance = new AssetRegistry(config, profile);
+        return Instance;
     }
 
     /// <summary>
@@ -59,7 +72,7 @@ public class AssetRegistry
             if (_cachedAssetGroups != null)
                 return _cachedAssetGroups;
 
-            _cachedAssetGroups = GroupAssetsCore(_containers.GetEntries());
+            _cachedAssetGroups = GroupAssetsCore(Containers.GetEntries());
             return _cachedAssetGroups;
         }
     }
@@ -115,7 +128,7 @@ public class AssetRegistry
     /// </summary>
     public Stream OpenRead(IAssetEntry entry)
     {
-        var container = _containers.GetMountedContainer(entry.ContainerPath);
+        var container = Containers.GetMountedContainer(entry.ContainerPath);
 
         return entry switch
         {

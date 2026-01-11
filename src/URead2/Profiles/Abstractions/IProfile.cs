@@ -40,11 +40,6 @@ public interface IProfile
     IBulkDataReader? BulkDataReader { get; }
 
     /// <summary>
-    /// Resolver for type schemas (from .usmap, asset-defined types, etc.).
-    /// </summary>
-    ITypeResolver TypeResolver { get; }
-
-    /// <summary>
     /// Reader for deserializing UObject properties.
     /// </summary>
     IPropertyReader PropertyReader { get; }

@@ -1,5 +1,6 @@
 using URead2.Assets.Abstractions;
 using URead2.Containers.Abstractions;
+using URead2.Containers.IoStore;
 using URead2.Profiles.Abstractions;
 
 namespace URead2.Containers;
@@ -27,10 +28,38 @@ public class ContainerRegistry : IDisposable
     // Entries indexed by path for fast lookup
     private Dictionary<string, IAssetEntry>? _entriesByPath;
 
-    public ContainerRegistry(RuntimeConfig config, IProfile profile)
+    // Script object index for IO Store (loaded from global.utoc)
+    private ScriptObjectIndex? _scriptObjectIndex;
+
+    // Singleton instance
+    public static ContainerRegistry? Instance { get; private set; }
+
+    private ContainerRegistry(RuntimeConfig config, IProfile profile)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
+    }
+
+    /// <summary>
+    /// Initializes the singleton instance.
+    /// </summary>
+    public static ContainerRegistry Initialize(RuntimeConfig config, IProfile profile)
+    {
+        Instance = new ContainerRegistry(config, profile);
+        return Instance;
+    }
+
+    /// <summary>
+    /// Script object index from global.utoc for resolving script imports.
+    /// Only available for IO Store containers.
+    /// </summary>
+    public ScriptObjectIndex? ScriptObjectIndex
+    {
+        get
+        {
+            EnsureMounted();
+            return _scriptObjectIndex;
+        }
     }
 
     /// <summary>
@@ -100,7 +129,51 @@ public class ContainerRegistry : IDisposable
 
             _allEntries = allEntries;
             _entriesByPath = entriesByPath;
+
+            // Load script object index if global.utoc exists
+            LoadScriptObjectIndex();
+
             _mounted = true;
+        }
+    }
+
+    /// <summary>
+    /// Loads script object index from global.utoc if present.
+    /// </summary>
+    private void LoadScriptObjectIndex()
+    {
+        var globalTocPath = FindGlobalToc();
+        if (globalTocPath == null)
+            return;
+
+        try
+        {
+            var reader = new ScriptObjectIndexReader();
+            _scriptObjectIndex = reader.Read(globalTocPath, _config.AesKey);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Failed to load script object index from: {Path}", globalTocPath);
+        }
+    }
+
+    /// <summary>
+    /// Finds global.utoc in the paks directory.
+    /// </summary>
+    private string? FindGlobalToc()
+    {
+        var directPath = Path.Combine(_config.PaksPath, "global.utoc");
+        if (File.Exists(directPath))
+            return directPath;
+
+        try
+        {
+            return Directory.EnumerateFiles(_config.PaksPath, "global.utoc", SearchOption.AllDirectories)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
         }
     }
 

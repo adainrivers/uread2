@@ -32,14 +32,3 @@ public enum EUsmapVersion : byte
 
     Latest = ExplicitEnumValues
 }
-
-/// <summary>
-/// .usmap compression methods.
-/// </summary>
-public enum EUsmapCompression : byte
-{
-    None = 0,
-    Oodle = 1,
-    Brotli = 2,
-    ZStandard = 3
-}

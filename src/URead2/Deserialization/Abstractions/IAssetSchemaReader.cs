@@ -14,7 +14,7 @@ public interface IAssetSchemaReader
     /// <param name="metadata">Asset metadata containing exports.</param>
     /// <param name="assetStream">Stream containing the asset data.</param>
     /// <param name="resolver">Resolver to register schemas with.</param>
-    void ReadSchemas(AssetMetadata metadata, Stream assetStream, AssetTypeResolver resolver);
+    void ReadSchemas(AssetMetadata metadata, Stream assetStream, TypeResolver resolver);
 
     /// <summary>
     /// Reads a specific export as a schema if it's a type definition.

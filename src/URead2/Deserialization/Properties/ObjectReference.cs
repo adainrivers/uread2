@@ -1,3 +1,5 @@
+using URead2.Assets.Models;
+
 namespace URead2.Deserialization.Properties;
 
 /// <summary>
@@ -26,33 +28,30 @@ public record ObjectReference
     public int Index { get; init; }
 
     /// <summary>
-    /// True if this is a null reference.
+    /// The resolved export metadata, if cross-package resolution succeeded.
     /// </summary>
+    public AssetExport? ResolvedExport { get; init; }
+
+    /// <summary>
+    /// The resolved package metadata, if cross-package resolution succeeded.
+    /// </summary>
+    public AssetMetadata? ResolvedMetadata { get; init; }
+
+    /// <summary>
+    /// True if this reference was fully resolved to its target export.
+    /// </summary>
+    public bool IsFullyResolved { get; init; }
+
+    // Computed helpers
+
+    public static ObjectReference Null => new() { Index = 0 };
+
     public bool IsNull => Index == 0;
-
-    /// <summary>
-    /// True if this references an import (external object).
-    /// </summary>
     public bool IsImport => Index < 0;
-
-    /// <summary>
-    /// True if this references an export (local object).
-    /// </summary>
     public bool IsExport => Index > 0;
-
-    /// <summary>
-    /// Gets the import array index (0-based) if this is an import.
-    /// </summary>
     public int ImportIndex => IsImport ? -Index - 1 : -1;
-
-    /// <summary>
-    /// Gets the export array index (0-based) if this is an export.
-    /// </summary>
     public int ExportIndex => IsExport ? Index - 1 : -1;
 
-    /// <summary>
-    /// Returns the reference in Unreal's standard format: Type'Path.Name'
-    /// </summary>
     public override string ToString()
     {
         if (IsNull)
@@ -69,9 +68,4 @@ public record ObjectReference
 
         return Index.ToString();
     }
-
-    /// <summary>
-    /// Creates a null reference.
-    /// </summary>
-    public static ObjectReference Null => new() { Index = 0 };
 }
