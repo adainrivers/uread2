@@ -1,6 +1,7 @@
 using URead2.Assets.Abstractions;
 using URead2.Assets.Models;
 using URead2.Compression;
+using URead2.Containers;
 using URead2.Containers.Pak;
 using URead2.Crypto;
 using URead2.IO;
@@ -21,14 +22,16 @@ public class PakEntryReader : IAssetEntryReader
         _decryptor = decryptor;
     }
 
-    public Stream OpenRead(IAssetEntry entry, byte[]? aesKey = null)
+    public Stream OpenRead(IAssetEntry entry, byte[]? aesKey = null, MountedContainer? container = null)
     {
         if (entry is not PakEntry pakEntry)
             throw new ArgumentException("Entry must be a PakEntry", nameof(entry));
 
-        var compressionMethod = ParseCompressionMethod(pakEntry.CompressionMethod);
+        if (container == null)
+            throw new ArgumentNullException(nameof(container), "MountedContainer is required");
 
-        var blockProvider = new PakBlockProvider(pakEntry, compressionMethod);
+        var compressionMethod = ParseCompressionMethod(pakEntry.CompressionMethod);
+        var blockProvider = new PakBlockProvider(pakEntry, compressionMethod, container);
         return new AssetStream(blockProvider, _decompressor, _decryptor, aesKey);
     }
 

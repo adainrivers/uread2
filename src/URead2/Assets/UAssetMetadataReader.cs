@@ -236,7 +236,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
         {
             int importIndex = -classIndex - 1;
             if (importIndex < imports.Length)
-                return imports[importIndex].ClassName;
+                return imports[importIndex].Name; // Name is the actual class, ClassName is its type
         }
 
         return "Unknown";

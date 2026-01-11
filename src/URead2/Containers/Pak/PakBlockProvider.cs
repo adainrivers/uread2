@@ -7,13 +7,13 @@ namespace URead2.Containers.Pak;
 
 /// <summary>
 /// Provides raw block data from a pak file.
+/// Uses memory-mapped file access for efficient reads.
 /// </summary>
 internal sealed class PakBlockProvider : IBlockProvider
 {
     private readonly PakEntry _entry;
-    private readonly Stream _fileStream;
+    private readonly MountedContainer _mountedContainer;
     private readonly List<CompressionBlock> _blocks;
-    private bool _disposed;
 
     public long UncompressedSize => _entry.Size;
     public int BlockCount => _blocks.Count;
@@ -22,10 +22,10 @@ internal sealed class PakBlockProvider : IBlockProvider
     public bool IsEncrypted => _entry.IsEncrypted;
     public int FirstBlockOffset => 0;
 
-    public PakBlockProvider(PakEntry entry, CompressionMethod compressionMethod)
+    public PakBlockProvider(PakEntry entry, CompressionMethod compressionMethod, MountedContainer mountedContainer)
     {
         _entry = entry;
-        _fileStream = File.OpenRead(entry.ContainerPath);
+        _mountedContainer = mountedContainer ?? throw new ArgumentNullException(nameof(mountedContainer));
         CompressionMethod = compressionMethod;
         _blocks = BuildBlockList(entry);
     }
@@ -94,16 +94,11 @@ internal sealed class PakBlockProvider : IBlockProvider
     {
         var block = _blocks[blockIndex];
         int readSize = GetBlockReadSize(blockIndex);
-        _fileStream.Seek(block.CompressedOffset, SeekOrigin.Begin);
-        _fileStream.ReadExactly(buffer[..readSize]);
+        _mountedContainer.Read(block.CompressedOffset, buffer[..readSize]);
     }
 
     public void Dispose()
     {
-        if (!_disposed)
-        {
-            _fileStream.Dispose();
-            _disposed = true;
-        }
+        // MountedContainer is shared and owned by ContainerRegistry - don't dispose
     }
 }

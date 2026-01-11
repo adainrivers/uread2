@@ -17,6 +17,9 @@ public sealed class AssetStream : Stream
     private readonly Decompressor _decompressor;
     private readonly IDecryptor _decryptor;
     private readonly byte[]? _aesKey;
+    private readonly int _blockSize;
+    private readonly int _blockCount;
+    private readonly int _firstBlockOffset;
 
     private long _position;
     private int _currentBlockIndex = -1;
@@ -24,6 +27,10 @@ public sealed class AssetStream : Stream
     private int _currentBlockDataLength; // Actual data length (pooled array may be larger)
     private bool _currentBlockDataPooled;
     private bool _disposed;
+
+    // Cached block bounds to avoid repeated GetBlock calls
+    private long _currentBlockStart;
+    private long _currentBlockEnd;
 
     public override bool CanRead => true;
     public override bool CanSeek => true;
@@ -50,7 +57,12 @@ public sealed class AssetStream : Stream
         _decryptor = decryptor;
         _aesKey = aesKey;
 
-        if (_blockProvider.IsEncrypted && _aesKey == null)
+        // Cache frequently accessed values
+        _blockSize = blockProvider.BlockSize;
+        _blockCount = blockProvider.BlockCount;
+        _firstBlockOffset = blockProvider.FirstBlockOffset;
+
+        if (blockProvider.IsEncrypted && _aesKey == null)
             throw new InvalidOperationException("Asset is encrypted but no AES key provided");
     }
 
@@ -67,19 +79,18 @@ public sealed class AssetStream : Stream
         int totalRead = 0;
         while (count > 0 && _position < Length)
         {
-            int targetBlock = FindBlockForPosition(_position);
-
-            if (targetBlock != _currentBlockIndex)
+            // Fast path: check if position is still within cached block bounds
+            if (_currentBlockIndex < 0 || _position < _currentBlockStart || _position >= _currentBlockEnd)
+            {
+                int targetBlock = FindBlockForPosition(_position);
                 LoadBlock(targetBlock);
+            }
 
-            var block = _blockProvider.GetBlock(targetBlock);
-            int blockOffset = (int)(_position - block.UncompressedOffset);
-
-            if (targetBlock == 0)
-                blockOffset += _blockProvider.FirstBlockOffset;
+            int blockOffset = (int)(_position - _currentBlockStart);
+            if (_currentBlockIndex == 0)
+                blockOffset += _firstBlockOffset;
 
             int availableInBlock = _currentBlockDataLength - blockOffset;
-
             if (availableInBlock <= 0)
                 break;
 
@@ -106,19 +117,18 @@ public sealed class AssetStream : Stream
         int totalRead = 0;
         while (buffer.Length > 0 && _position < Length)
         {
-            int targetBlock = FindBlockForPosition(_position);
-
-            if (targetBlock != _currentBlockIndex)
+            // Fast path: check if position is still within cached block bounds
+            if (_currentBlockIndex < 0 || _position < _currentBlockStart || _position >= _currentBlockEnd)
+            {
+                int targetBlock = FindBlockForPosition(_position);
                 LoadBlock(targetBlock);
+            }
 
-            var block = _blockProvider.GetBlock(targetBlock);
-            int blockOffset = (int)(_position - block.UncompressedOffset);
-
-            if (targetBlock == 0)
-                blockOffset += _blockProvider.FirstBlockOffset;
+            int blockOffset = (int)(_position - _currentBlockStart);
+            if (_currentBlockIndex == 0)
+                blockOffset += _firstBlockOffset;
 
             int availableInBlock = _currentBlockDataLength - blockOffset;
-
             if (availableInBlock <= 0)
                 break;
 
@@ -136,37 +146,27 @@ public sealed class AssetStream : Stream
     private int FindBlockForPosition(long position)
     {
         // Fast path: use division for uniformly-sized blocks
-        if (_blockProvider.BlockSize > 0)
+        if (_blockSize > 0)
         {
-            int estimated = (int)(position / _blockProvider.BlockSize);
-            estimated = Math.Min(estimated, _blockProvider.BlockCount - 1);
-
-            // Verify the estimate is correct
-            var block = _blockProvider.GetBlock(estimated);
-            long blockEnd = block.UncompressedOffset + block.UncompressedSize;
-
-            if (position >= block.UncompressedOffset && position < blockEnd)
-                return estimated;
-
-            // Estimate was wrong (variable-size blocks), fall through to linear search
+            int estimated = (int)(position / _blockSize);
+            if (estimated >= _blockCount)
+                estimated = _blockCount - 1;
+            return estimated;
         }
 
         // Linear search fallback for variable-size blocks
-        // Note: Could use binary search for O(log n) but linear is fine for typical block counts
-        for (int i = 0; i < _blockProvider.BlockCount; i++)
+        for (int i = 0; i < _blockCount; i++)
         {
             var block = _blockProvider.GetBlock(i);
             if (position < block.UncompressedOffset + block.UncompressedSize)
                 return i;
         }
 
-        return _blockProvider.BlockCount - 1;
+        return _blockCount - 1;
     }
 
     private void LoadBlock(int blockIndex)
     {
-        Log.Verbose("Loading block {BlockIndex} of {BlockCount}", blockIndex, _blockProvider.BlockCount);
-
         // Return previous block data to pool
         ReturnCurrentBlockData();
 
@@ -207,7 +207,10 @@ public sealed class AssetStream : Stream
             ArrayPool<byte>.Shared.Return(rawBuffer);
         }
 
+        // Cache block bounds for fast path in Read
         _currentBlockIndex = blockIndex;
+        _currentBlockStart = block.UncompressedOffset;
+        _currentBlockEnd = block.UncompressedOffset + block.UncompressedSize;
     }
 
     private void ReturnCurrentBlockData()

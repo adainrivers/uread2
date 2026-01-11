@@ -8,19 +8,18 @@ namespace URead2.Containers.IoStore;
 
 /// <summary>
 /// Provides raw block data from an IO Store container (.ucas file).
+/// Uses memory-mapped file access for efficient reads.
 /// </summary>
 /// <remarks>
 /// IO Store uses global compression blocks shared across all entries.
-/// This provider calculates which blocks span the entry and reads from the .ucas file.
+/// This provider calculates which blocks span the entry and reads from the mounted container.
 /// </remarks>
 internal sealed class IoStoreBlockProvider : IBlockProvider
 {
     private readonly IoStoreEntry _entry;
-    private readonly Stream _containerStream;
+    private readonly MountedContainer _mountedContainer;
     private readonly List<CompressionBlock> _blocks;
     private readonly List<byte> _blockCompressionMethodIndices;
-    private readonly int _firstGlobalBlockIndex;
-    private bool _disposed;
 
     public long UncompressedSize => _entry.Size;
     public int BlockCount => _blocks.Count;
@@ -29,10 +28,10 @@ internal sealed class IoStoreBlockProvider : IBlockProvider
     public bool IsEncrypted { get; }
     public int FirstBlockOffset { get; }
 
-    public IoStoreBlockProvider(IoStoreEntry entry)
+    public IoStoreBlockProvider(IoStoreEntry entry, MountedContainer mountedContainer)
     {
         _entry = entry;
-        _containerStream = File.OpenRead(entry.ContainerPath);
+        _mountedContainer = mountedContainer ?? throw new ArgumentNullException(nameof(mountedContainer));
 
         var tocInfo = entry.TocInfo;
         BlockSize = tocInfo.CompressionBlockSize;
@@ -42,18 +41,18 @@ internal sealed class IoStoreBlockProvider : IBlockProvider
             BlockSize = 65536; // Default block size
 
         // Calculate which global blocks this entry spans
-        _firstGlobalBlockIndex = (int)(_entry.Offset / BlockSize);
+        int firstGlobalBlockIndex = (int)(_entry.Offset / BlockSize);
         int lastGlobalBlockIndex = _entry.Size > 0
             ? (int)((_entry.Offset + _entry.Size - 1) / BlockSize)
-            : _firstGlobalBlockIndex;
+            : firstGlobalBlockIndex;
 
         // Calculate offset within first block where entry data starts
         FirstBlockOffset = (int)(_entry.Offset % BlockSize);
 
         // Determine compression method from first block (used as default)
-        if (_firstGlobalBlockIndex < tocInfo.CompressionBlocks.Count)
+        if (firstGlobalBlockIndex < tocInfo.CompressionBlocks.Count)
         {
-            var firstBlock = tocInfo.CompressionBlocks[_firstGlobalBlockIndex];
+            var firstBlock = tocInfo.CompressionBlocks[firstGlobalBlockIndex];
             CompressionMethod = GetCompressionMethod(firstBlock.CompressionMethodIndex, tocInfo);
         }
         else
@@ -63,7 +62,7 @@ internal sealed class IoStoreBlockProvider : IBlockProvider
 
         // Build block list for this entry, tracking per-block compression methods
         _blockCompressionMethodIndices = new List<byte>();
-        _blocks = BuildBlockList(_firstGlobalBlockIndex, lastGlobalBlockIndex, tocInfo, _blockCompressionMethodIndices);
+        _blocks = BuildBlockList(firstGlobalBlockIndex, lastGlobalBlockIndex, tocInfo, _blockCompressionMethodIndices);
     }
 
     private IoStoreTocInfo TocInfo => _entry.TocInfo;
@@ -149,16 +148,11 @@ internal sealed class IoStoreBlockProvider : IBlockProvider
     {
         var block = _blocks[blockIndex];
         int readSize = GetBlockReadSize(blockIndex);
-        _containerStream.Seek(block.CompressedOffset, SeekOrigin.Begin);
-        _containerStream.ReadExactly(buffer[..readSize]);
+        _mountedContainer.Read(block.CompressedOffset, buffer[..readSize]);
     }
 
     public void Dispose()
     {
-        if (!_disposed)
-        {
-            _containerStream.Dispose();
-            _disposed = true;
-        }
+        // MountedContainer is shared and owned by ContainerRegistry - don't dispose
     }
 }

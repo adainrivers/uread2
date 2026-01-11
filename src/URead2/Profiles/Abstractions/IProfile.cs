@@ -2,6 +2,7 @@ using URead2.Assets.Abstractions;
 using URead2.Compression;
 using URead2.Containers.Abstractions;
 using URead2.Crypto;
+using URead2.Deserialization.Abstractions;
 
 namespace URead2.Profiles.Abstractions;
 
@@ -37,4 +38,19 @@ public interface IProfile
     /// Reader for FByteBulkData structures.
     /// </summary>
     IBulkDataReader? BulkDataReader { get; }
+
+    /// <summary>
+    /// Resolver for type schemas (from .usmap, asset-defined types, etc.).
+    /// </summary>
+    ITypeResolver TypeResolver { get; }
+
+    /// <summary>
+    /// Reader for deserializing UObject properties.
+    /// </summary>
+    IPropertyReader PropertyReader { get; }
+
+    /// <summary>
+    /// Reader for extracting type schemas from asset exports.
+    /// </summary>
+    IAssetSchemaReader? AssetSchemaReader { get; }
 }

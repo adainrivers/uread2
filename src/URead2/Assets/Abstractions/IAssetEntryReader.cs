@@ -1,3 +1,5 @@
+using URead2.Containers;
+
 namespace URead2.Assets.Abstractions;
 
 /// <summary>
@@ -5,5 +7,5 @@ namespace URead2.Assets.Abstractions;
 /// </summary>
 public interface IAssetEntryReader
 {
-    Stream OpenRead(IAssetEntry entry, byte[]? aesKey = null);
+    Stream OpenRead(IAssetEntry entry, byte[]? aesKey = null, MountedContainer? container = null);
 }

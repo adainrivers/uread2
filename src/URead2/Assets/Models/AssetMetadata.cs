@@ -8,5 +8,10 @@ public record AssetMetadata(
     string Name,
     string[] NameTable,
     AssetExport[] Exports,
-    AssetImport[] Imports
+    AssetImport[] Imports,
+    /// <summary>
+    /// For IO Store packages, the header size to add to export offsets.
+    /// For PAK packages, this is 0 (offsets are absolute).
+    /// </summary>
+    int CookedHeaderSize = 0
 );

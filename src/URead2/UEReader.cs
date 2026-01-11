@@ -24,7 +24,7 @@ public class UEReader : IDisposable
 
         _profile = profile;
         _containers = new ContainerRegistry(config, profile);
-        _assets = new AssetRegistry(config, profile);
+        _assets = new AssetRegistry(config, profile, _containers);
     }
 
     /// <summary>
@@ -45,9 +45,12 @@ public class UEReader : IDisposable
 
     /// <summary>
     /// Gets all assets grouped with their companion files.
+    /// Uses cached results. Optional filter applies to AssetGroup.BasePath.
     /// </summary>
-    public IEnumerable<AssetGroup> GetAssets(Func<string, bool>? containerPathFilter = null)
-        => _assets.GroupAssets(_containers.GetEntries(containerPathFilter));
+    public IEnumerable<AssetGroup> GetAssets(Func<string, bool>? pathFilter = null)
+        => pathFilter == null
+            ? _assets.GetAssetGroups()
+            : _assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
 
     /// <summary>
     /// Opens a stream to read entry content.
@@ -76,10 +79,34 @@ public class UEReader : IDisposable
     public ExportData ReadExportData(AssetGroup asset, AssetExport export)
         => _assets.ReadExportData(asset, export);
 
+    /// <summary>
+    /// Preloads all asset metadata in parallel and builds the global export index.
+    /// Call once at startup for fastest cross-package access.
+    /// </summary>
+    public void PreloadAllMetadata(int? maxDegreeOfParallelism = null, Action<int, int>? progress = null)
+        => _assets.PreloadAllMetadata(maxDegreeOfParallelism, progress);
+
+    /// <summary>
+    /// Resolves an export by its full path. O(1) lookup after PreloadAllMetadata.
+    /// </summary>
+    public (AssetMetadata Metadata, AssetExport Export)? ResolveExport(string exportPath)
+        => _assets.ResolveExport(exportPath);
+
+    /// <summary>
+    /// Number of cached metadata entries.
+    /// </summary>
+    public int MetadataCacheCount => _assets.MetadataCacheCount;
+
+    /// <summary>
+    /// Number of indexed exports for cross-package resolution.
+    /// </summary>
+    public int ExportIndexCount => _assets.ExportIndexCount;
+
     public void Dispose()
     {
         if (!_disposed)
         {
+            _containers.Dispose();
             (_profile as IDisposable)?.Dispose();
             _disposed = true;
         }
