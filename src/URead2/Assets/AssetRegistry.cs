@@ -31,6 +31,9 @@ public class AssetRegistry
     // Global export index for cross-package resolution: "PackagePath.ExportName" -> ExportIndexEntry
     private ConcurrentDictionary<string, ExportIndexEntry>? _exportIndex;
 
+    // Name-based index for type lookup: "ExportName" -> List<ExportIndexEntry>
+    private Dictionary<string, List<ExportIndexEntry>>? _exportNameIndex;
+
     // Hash index for PackageImport class resolution: PublicExportHash -> ClassName
     private Dictionary<ulong, string>? _publicExportHashIndex;
 
@@ -201,6 +204,8 @@ public class AssetRegistry
         _metadataCache.Clear();
         _exportIndex?.Clear();
         _exportIndex = null;
+        _exportNameIndex?.Clear();
+        _exportNameIndex = null;
         _publicExportHashIndex?.Clear();
         _publicExportHashIndex = null;
     }
@@ -240,6 +245,7 @@ public class AssetRegistry
     public void BuildExportIndex()
     {
         _exportIndex = new ConcurrentDictionary<string, ExportIndexEntry>(StringComparer.OrdinalIgnoreCase);
+        _exportNameIndex = new Dictionary<string, List<ExportIndexEntry>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var (path, metadata) in _metadataCache)
         {
@@ -252,15 +258,58 @@ public class AssetRegistry
             for (int i = 0; i < metadata.Exports.Length; i++)
             {
                 var export = metadata.Exports[i];
+                var entry = new ExportIndexEntry(metadata, i);
+
                 // Key format: "PackagePath.ExportName"
                 var exportKey = $"{packagePath}.{export.Name}";
-                _exportIndex.TryAdd(exportKey, new ExportIndexEntry(metadata, i));
+                _exportIndex.TryAdd(exportKey, entry);
+
+                // Also index by name only for type lookups
+                if (!_exportNameIndex.TryGetValue(export.Name, out var list))
+                {
+                    list = [];
+                    _exportNameIndex[export.Name] = list;
+                }
+                list.Add(entry);
             }
         }
 
-        // Build hash index and resolve external class names
+        // Build hash index and resolve class/super names
         BuildPublicExportHashIndex();
+        ResolveLocalClassNames();
         ResolveExternalClassNames();
+    }
+
+    /// <summary>
+    /// Resolves local class/super references using export indices within the same package.
+    /// </summary>
+    private void ResolveLocalClassNames()
+    {
+        foreach (var (_, metadata) in _metadataCache)
+        {
+            foreach (var export in metadata.Exports)
+            {
+                // Resolve local class reference
+                if (export.ClassRef is { Type: Models.PackageObjectType.Export } classRef)
+                {
+                    var idx = classRef.ExportIndex;
+                    if (idx >= 0 && idx < metadata.Exports.Length)
+                    {
+                        export.ClassName = metadata.Exports[idx].Name;
+                    }
+                }
+
+                // Resolve local super reference
+                if (export.SuperRef is { Type: Models.PackageObjectType.Export } superRef)
+                {
+                    var idx = superRef.ExportIndex;
+                    if (idx >= 0 && idx < metadata.Exports.Length)
+                    {
+                        export.SuperClassName = metadata.Exports[idx].Name;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -286,7 +335,7 @@ public class AssetRegistry
     }
 
     /// <summary>
-    /// Resolves ExternalClass_X names using the PublicExportHash index.
+    /// Resolves external class references using the PublicExportHash index.
     /// </summary>
     private void ResolveExternalClassNames()
     {
@@ -301,25 +350,32 @@ public class AssetRegistry
 
             foreach (var export in metadata.Exports)
             {
-                // Check if class name is unresolved (ExternalClass_X format)
-                if (!export.ClassName.StartsWith("ExternalClass_", StringComparison.Ordinal))
-                    continue;
-
-                // Parse the hash index from class name
-                if (!uint.TryParse(export.ClassName.AsSpan(14), out var hashIdx))
-                    continue;
-
-                // Bounds check
-                if (hashIdx >= metadata.ImportedPublicExportHashes.Length)
-                    continue;
-
-                // Get the actual hash value
-                var hash = metadata.ImportedPublicExportHashes[hashIdx];
-
-                // Look up in global index
-                if (_publicExportHashIndex.TryGetValue(hash, out var className))
+                // Resolve external class reference (PackageImport)
+                if (export.ClassRef is { Type: Models.PackageObjectType.PackageImport } classRef)
                 {
-                    export.ClassName = className;
+                    var hashIdx = classRef.HashIndex;
+                    if (hashIdx < metadata.ImportedPublicExportHashes.Length)
+                    {
+                        var hash = metadata.ImportedPublicExportHashes[hashIdx];
+                        if (_publicExportHashIndex.TryGetValue(hash, out var className))
+                        {
+                            export.ClassName = className;
+                        }
+                    }
+                }
+
+                // Resolve external super reference (PackageImport)
+                if (export.SuperRef is { Type: Models.PackageObjectType.PackageImport } superRef)
+                {
+                    var hashIdx = superRef.HashIndex;
+                    if (hashIdx < metadata.ImportedPublicExportHashes.Length)
+                    {
+                        var hash = metadata.ImportedPublicExportHashes[hashIdx];
+                        if (_publicExportHashIndex.TryGetValue(hash, out var superName))
+                        {
+                            export.SuperClassName = superName;
+                        }
+                    }
                 }
             }
         }
@@ -339,6 +395,25 @@ public class AssetRegistry
             return (entry.Metadata, entry.Metadata.Exports[entry.ExportIndex]);
 
         return null;
+    }
+
+    /// <summary>
+    /// Finds all exports with the given name. O(1) lookup after PreloadAllMetadata.
+    /// </summary>
+    /// <param name="exportName">Export name (e.g., "BP_Water_C").</param>
+    /// <returns>Enumerable of matching exports, or empty if not found.</returns>
+    public IEnumerable<(AssetMetadata Metadata, AssetExport Export)> FindExportsByName(string exportName)
+    {
+        if (_exportNameIndex == null)
+            yield break;
+
+        if (!_exportNameIndex.TryGetValue(exportName, out var entries))
+            yield break;
+
+        foreach (var entry in entries)
+        {
+            yield return (entry.Metadata, entry.Metadata.Exports[entry.ExportIndex]);
+        }
     }
 
     /// <summary>

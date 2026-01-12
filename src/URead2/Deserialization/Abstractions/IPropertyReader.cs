@@ -1,6 +1,6 @@
 using URead2.Deserialization.Properties;
-using URead2.Deserialization.TypeMappings;
 using URead2.IO;
+using URead2.TypeResolution;
 
 namespace URead2.Deserialization.Abstractions;
 
@@ -40,6 +40,6 @@ public interface IPropertyReader
     PropertyValue ReadPropertyByType(
         ArchiveReader ar,
         PropertyReadContext context,
-        UsmapPropertyType propType,
+        PropertyType propType,
         ReadContext readContext);
 }

@@ -159,7 +159,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
     protected virtual AssetExport ReadExport(ArchiveReader archive, string[] nameTable, AssetImport[] imports, PackageSummary summary)
     {
         int classIndex = archive.ReadInt32();
-        archive.Skip(4); // SuperIndex
+        int superIndex = archive.ReadInt32();
 
         if (summary.FileVersionUE4 >= 378)
             archive.Skip(4); // TemplateIndex
@@ -212,8 +212,9 @@ public class UAssetMetadataReader : IAssetMetadataReader
 
         // Resolve class name from imports
         string className = ResolveClassName(classIndex, imports);
+        string? superClassName = ResolveSuperClassName(superIndex, imports);
 
-        return new AssetExport(objectName, className, serialOffset, serialSize, outerIndex, isPublic);
+        return new AssetExport(objectName, className, serialOffset, serialSize, outerIndex, isPublic, 0, superClassName);
     }
 
     private static string ReadFName(ArchiveReader archive, string[] nameTable)
@@ -242,6 +243,27 @@ public class UAssetMetadataReader : IAssetMetadataReader
         }
 
         return "Unknown";
+    }
+
+    private static string? ResolveSuperClassName(int superIndex, AssetImport[] imports)
+    {
+        if (superIndex == 0)
+            return null;
+
+        // Negative = import, Positive = export
+        if (superIndex < 0)
+        {
+            int importIndex = -superIndex - 1;
+            if (importIndex < imports.Length)
+                return imports[importIndex].Name;
+        }
+        else
+        {
+            // Positive = local export (BP inheriting from BP in same package)
+            return $"LocalSuper_{superIndex - 1}";
+        }
+
+        return null;
     }
 
     /// <summary>

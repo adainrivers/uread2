@@ -3,6 +3,7 @@ using URead2.Compression;
 using URead2.Containers.Abstractions;
 using URead2.Crypto;
 using URead2.Deserialization.Abstractions;
+using URead2.Deserialization.TypeReaders;
 
 namespace URead2.Profiles.Abstractions;
 
@@ -45,7 +46,7 @@ public interface IProfile
     IPropertyReader PropertyReader { get; }
 
     /// <summary>
-    /// Reader for extracting type schemas from asset exports.
+    /// Registry for custom type readers (classes with native serialization).
     /// </summary>
-    IAssetSchemaReader? AssetSchemaReader { get; }
+    TypeReaderRegistry TypeReaderRegistry { get; }
 }

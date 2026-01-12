@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using URead2.TypeResolution;
 
 namespace URead2.Deserialization.Properties;
 
@@ -150,6 +151,16 @@ public sealed class PropertyBag
     }
 
     /// <summary>
+    /// The class or struct type name.
+    /// </summary>
+    public string? TypeName { get; set; }
+
+    /// <summary>
+    /// The type definition used for deserialization (for debugging).
+    /// </summary>
+    public TypeDefinition? TypeDef { get; set; }
+
+    /// <summary>
     /// Gets all property names.
     /// </summary>
     public IEnumerable<string> Names => _properties.Keys;
@@ -211,5 +222,76 @@ public sealed class PropertyBag
     public bool TryGet(string name, out PropertyValue? value)
     {
         return _properties.TryGetValue(name, out value);
+    }
+
+    /// <summary>
+    /// Converts the property bag to a dictionary, recursively converting nested structures.
+    /// </summary>
+    public Dictionary<string, object?> ToDictionary()
+    {
+        var result = new Dictionary<string, object?>(_properties.Count);
+        foreach (var (key, value) in _properties)
+        {
+            result[key] = ConvertValue(value);
+        }
+        return result;
+    }
+
+    private static object? ConvertValue(PropertyValue? value)
+    {
+        return value switch
+        {
+            null => null,
+            StructProperty sp => sp.Value?.ToDictionary(),
+            ArrayProperty ap => ConvertArray(ap.Value),
+            SetProperty setp => ConvertArray(setp.Value),
+            MapProperty mp => ConvertMap(mp.Value),
+            ObjectProperty op => op.Value?.Path ?? op.Value?.Name,
+            _ => ConvertGenericValue(value.GenericValue)
+        };
+    }
+
+    private static object? ConvertGenericValue(object? value)
+    {
+        return value switch
+        {
+            PropertyBag bag => bag.ToDictionary(),
+            PropertyValue pv => ConvertValue(pv),
+            float f when float.IsNaN(f) => "NaN",
+            float f when float.IsPositiveInfinity(f) => "Infinity",
+            float f when float.IsNegativeInfinity(f) => "-Infinity",
+            double d when double.IsNaN(d) => "NaN",
+            double d when double.IsPositiveInfinity(d) => "Infinity",
+            double d when double.IsNegativeInfinity(d) => "-Infinity",
+            _ => value
+        };
+    }
+
+    private static object?[] ConvertArray(PropertyValue[]? values)
+    {
+        if (values == null || values.Length == 0)
+            return [];
+
+        var result = new object?[values.Length];
+        for (int i = 0; i < values.Length; i++)
+        {
+            result[i] = ConvertValue(values[i]);
+        }
+        return result;
+    }
+
+    private static List<KeyValuePair<object?, object?>> ConvertMap(MapEntry[]? entries)
+    {
+        if (entries == null || entries.Length == 0)
+            return [];
+
+        var result = new List<KeyValuePair<object?, object?>>(entries.Length);
+        foreach (var entry in entries)
+        {
+            var key = ConvertValue(entry.Key);
+            var value = ConvertValue(entry.Value);
+            result.Add(new KeyValuePair<object?, object?>(key, value));
+        }
+        return result;
     }
 }

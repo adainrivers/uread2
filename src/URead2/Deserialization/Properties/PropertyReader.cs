@@ -1,6 +1,7 @@
+using Serilog;
 using URead2.Deserialization.Abstractions;
-using URead2.Deserialization.TypeMappings;
 using URead2.IO;
+using URead2.TypeResolution;
 
 namespace URead2.Deserialization.Properties;
 
@@ -9,6 +10,7 @@ namespace URead2.Deserialization.Properties;
 /// </summary>
 public class PropertyReader : IPropertyReader
 {
+    private static readonly HashSet<string> _loggedMissingSchemas = [];
     /// <summary>
     /// Reads all properties from an export's serialized data.
     /// </summary>
@@ -18,7 +20,12 @@ public class PropertyReader : IPropertyReader
         string className,
         bool isUnversioned = false)
     {
-        var bag = new PropertyBag();
+        var typeDef = context.TypeRegistry.GetType(className);
+        var bag = new PropertyBag
+        {
+            TypeName = className,
+            TypeDef = typeDef
+        };
 
         if (isUnversioned)
         {
@@ -71,18 +78,26 @@ public class PropertyReader : IPropertyReader
         string className,
         PropertyBag bag)
     {
-        var schema = context.TypeResolver.GetSchema(className);
-        if (schema == null)
+        var typeDef = context.TypeRegistry.GetType(className);
+        if (typeDef == null)
+        {
+            if (_loggedMissingSchemas.Add(className))
+                Log.Warning("No type definition found for class {ClassName}", className);
             return;
+        }
 
         var header = ReadUnversionedHeader(ar);
         if (!header.HasValues)
             return;
 
         // Get cached flattened properties to avoid repeated inheritance walks
-        var allProperties = context.TypeResolver.GetFlattenedProperties(className);
+        var allProperties = context.TypeRegistry.GetFlattenedProperties(className);
         if (allProperties == null)
+        {
+            if (_loggedMissingSchemas.Add($"props:{className}"))
+                Log.Warning("No flattened properties found for class {ClassName}", className);
             return;
+        }
 
         int schemaIndex = 0;
         int zeroMaskIndex = 0;
@@ -104,7 +119,7 @@ public class PropertyReader : IPropertyReader
                 if (prop != null)
                 {
                     var readContext = isZero ? ReadContext.Zero : ReadContext.Normal;
-                    var value = ReadPropertyByType(ar, context, prop.PropertyType, readContext);
+                    var value = ReadPropertyByType(ar, context, prop.Type, readContext);
                     bag.Add(prop.Name, value);
                 }
 
@@ -191,35 +206,35 @@ public class PropertyReader : IPropertyReader
     public virtual PropertyValue ReadPropertyByType(
         ArchiveReader ar,
         PropertyReadContext context,
-        UsmapPropertyType propType,
+        PropertyType propType,
         ReadContext readContext)
     {
-        return propType.Type switch
+        return propType.Kind switch
         {
-            EPropertyType.BoolProperty => BoolProperty.Create(ar, readContext),
-            EPropertyType.Int8Property => Int8Property.Create(ar, readContext),
-            EPropertyType.ByteProperty => ByteProperty.Create(ar, readContext),
-            EPropertyType.Int16Property => Int16Property.Create(ar, readContext),
-            EPropertyType.UInt16Property => UInt16Property.Create(ar, readContext),
-            EPropertyType.IntProperty => IntProperty.Create(ar, readContext),
-            EPropertyType.UInt32Property => UInt32Property.Create(ar, readContext),
-            EPropertyType.Int64Property => Int64Property.Create(ar, readContext),
-            EPropertyType.UInt64Property => UInt64Property.Create(ar, readContext),
-            EPropertyType.FloatProperty => FloatProperty.Create(ar, readContext),
-            EPropertyType.DoubleProperty => DoubleProperty.Create(ar, readContext),
-            EPropertyType.StrProperty => new StrProperty(ar, readContext),
-            EPropertyType.NameProperty => new NameProperty(ar, context.NameTable, readContext),
-            EPropertyType.TextProperty => new TextProperty(ar, readContext),
-            EPropertyType.ObjectProperty => new ObjectProperty(ar, context, readContext),
-            EPropertyType.SoftObjectProperty => new SoftObjectProperty(ar, context.NameTable, readContext),
-            EPropertyType.InterfaceProperty => new InterfaceProperty(ar, context, readContext),
-            EPropertyType.DelegateProperty => new DelegateProperty(ar, context, readContext),
-            EPropertyType.MulticastDelegateProperty => new MulticastDelegateProperty(ar, context, readContext),
-            EPropertyType.EnumProperty => ReadEnumByType(ar, context, propType, readContext),
-            EPropertyType.ArrayProperty => ReadArrayByType(ar, context, propType, readContext),
-            EPropertyType.SetProperty => ReadSetByType(ar, context, propType, readContext),
-            EPropertyType.MapProperty => ReadMapByType(ar, context, propType, readContext),
-            EPropertyType.StructProperty => ReadStructByType(ar, context, propType, readContext),
+            PropertyKind.BoolProperty => BoolProperty.Create(ar, readContext),
+            PropertyKind.Int8Property => Int8Property.Create(ar, readContext),
+            PropertyKind.ByteProperty => ByteProperty.Create(ar, readContext),
+            PropertyKind.Int16Property => Int16Property.Create(ar, readContext),
+            PropertyKind.UInt16Property => UInt16Property.Create(ar, readContext),
+            PropertyKind.IntProperty => IntProperty.Create(ar, readContext),
+            PropertyKind.UInt32Property => UInt32Property.Create(ar, readContext),
+            PropertyKind.Int64Property => Int64Property.Create(ar, readContext),
+            PropertyKind.UInt64Property => UInt64Property.Create(ar, readContext),
+            PropertyKind.FloatProperty => FloatProperty.Create(ar, readContext),
+            PropertyKind.DoubleProperty => DoubleProperty.Create(ar, readContext),
+            PropertyKind.StrProperty => new StrProperty(ar, readContext),
+            PropertyKind.NameProperty => new NameProperty(ar, context.NameTable, readContext),
+            PropertyKind.TextProperty => new TextProperty(ar, readContext),
+            PropertyKind.ObjectProperty => new ObjectProperty(ar, context, readContext),
+            PropertyKind.SoftObjectProperty => new SoftObjectProperty(ar, context.NameTable, readContext),
+            PropertyKind.InterfaceProperty => new InterfaceProperty(ar, context, readContext),
+            PropertyKind.DelegateProperty => new DelegateProperty(ar, context, readContext),
+            PropertyKind.MulticastDelegateProperty => new MulticastDelegateProperty(ar, context, readContext),
+            PropertyKind.EnumProperty => ReadEnumByType(ar, context, propType, readContext),
+            PropertyKind.ArrayProperty => ReadArrayByType(ar, context, propType, readContext),
+            PropertyKind.SetProperty => ReadSetByType(ar, context, propType, readContext),
+            PropertyKind.MapProperty => ReadMapByType(ar, context, propType, readContext),
+            PropertyKind.StructProperty => ReadStructByType(ar, context, propType, readContext),
             _ => ByteProperty.Zero
         };
     }
@@ -235,7 +250,7 @@ public class PropertyReader : IPropertyReader
         return new EnumProperty(value, enumName);
     }
 
-    protected virtual EnumProperty ReadEnumByType(ArchiveReader ar, PropertyReadContext context, UsmapPropertyType propType, ReadContext readContext)
+    protected virtual EnumProperty ReadEnumByType(ArchiveReader ar, PropertyReadContext context, PropertyType propType, ReadContext readContext)
     {
         if (readContext == ReadContext.Zero)
             return new EnumProperty(null, propType.EnumName);
@@ -245,11 +260,11 @@ public class PropertyReader : IPropertyReader
             var innerValue = ReadPropertyByType(ar, context, propType.InnerType, readContext);
             var numericValue = innerValue.GenericValue;
 
-            var enumDef = context.TypeResolver.GetEnum(propType.EnumName ?? "");
+            var enumDef = context.TypeRegistry.GetEnum(propType.EnumName ?? "");
             if (enumDef != null && numericValue is IConvertible conv)
             {
                 var longValue = conv.ToInt64(null);
-                var valueName = enumDef.GetValueName(longValue);
+                var valueName = enumDef.GetName(longValue);
                 return new EnumProperty(valueName, propType.EnumName);
             }
         }
@@ -279,14 +294,14 @@ public class PropertyReader : IPropertyReader
         return new ArrayProperty(elements, innerType);
     }
 
-    protected virtual ArrayProperty ReadArrayByType(ArchiveReader ar, PropertyReadContext context, UsmapPropertyType propType, ReadContext readContext)
+    protected virtual ArrayProperty ReadArrayByType(ArchiveReader ar, PropertyReadContext context, PropertyType propType, ReadContext readContext)
     {
         if (readContext == ReadContext.Zero)
-            return new ArrayProperty([], propType.InnerType?.Type.ToString());
+            return new ArrayProperty([], propType.InnerType?.Kind.ToString());
 
         var count = ar.ReadInt32();
         if (count < 0 || count > 1000000)
-            return new ArrayProperty([], propType.InnerType?.Type.ToString());
+            return new ArrayProperty([], propType.InnerType?.Kind.ToString());
 
         var elements = new PropertyValue[count];
         if (propType.InnerType != null)
@@ -297,7 +312,7 @@ public class PropertyReader : IPropertyReader
             }
         }
 
-        return new ArrayProperty(elements, propType.InnerType?.Type.ToString());
+        return new ArrayProperty(elements, propType.InnerType?.Kind.ToString());
     }
 
     #endregion
@@ -331,14 +346,14 @@ public class PropertyReader : IPropertyReader
         return new SetProperty(elements, elementType);
     }
 
-    protected virtual SetProperty ReadSetByType(ArchiveReader ar, PropertyReadContext context, UsmapPropertyType propType, ReadContext readContext)
+    protected virtual SetProperty ReadSetByType(ArchiveReader ar, PropertyReadContext context, PropertyType propType, ReadContext readContext)
     {
         if (readContext == ReadContext.Zero)
-            return new SetProperty([], propType.InnerType?.Type.ToString());
+            return new SetProperty([], propType.InnerType?.Kind.ToString());
 
         var numToRemove = ar.ReadInt32();
         if (numToRemove < 0 || numToRemove > 1000000)
-            return new SetProperty([], propType.InnerType?.Type.ToString());
+            return new SetProperty([], propType.InnerType?.Kind.ToString());
 
         if (propType.InnerType != null)
         {
@@ -350,7 +365,7 @@ public class PropertyReader : IPropertyReader
 
         var count = ar.ReadInt32();
         if (count < 0 || count > 1000000)
-            return new SetProperty([], propType.InnerType?.Type.ToString());
+            return new SetProperty([], propType.InnerType?.Kind.ToString());
 
         var elements = new PropertyValue[count];
         if (propType.InnerType != null)
@@ -361,7 +376,7 @@ public class PropertyReader : IPropertyReader
             }
         }
 
-        return new SetProperty(elements, propType.InnerType?.Type.ToString());
+        return new SetProperty(elements, propType.InnerType?.Kind.ToString());
     }
 
     #endregion
@@ -397,14 +412,14 @@ public class PropertyReader : IPropertyReader
         return new MapProperty(entries, keyType, valueType);
     }
 
-    protected virtual MapProperty ReadMapByType(ArchiveReader ar, PropertyReadContext context, UsmapPropertyType propType, ReadContext readContext)
+    protected virtual MapProperty ReadMapByType(ArchiveReader ar, PropertyReadContext context, PropertyType propType, ReadContext readContext)
     {
         if (readContext == ReadContext.Zero)
-            return new MapProperty([], propType.InnerType?.Type.ToString(), propType.ValueType?.Type.ToString());
+            return new MapProperty([], propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
 
         var numToRemove = ar.ReadInt32();
         if (numToRemove < 0 || numToRemove > 1000000)
-            return new MapProperty([], propType.InnerType?.Type.ToString(), propType.ValueType?.Type.ToString());
+            return new MapProperty([], propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
 
         if (propType.InnerType != null)
         {
@@ -416,7 +431,7 @@ public class PropertyReader : IPropertyReader
 
         var count = ar.ReadInt32();
         if (count < 0 || count > 1000000)
-            return new MapProperty([], propType.InnerType?.Type.ToString(), propType.ValueType?.Type.ToString());
+            return new MapProperty([], propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
 
         var entries = new MapEntry[count];
         for (int i = 0; i < count; i++)
@@ -430,7 +445,7 @@ public class PropertyReader : IPropertyReader
             entries[i] = new MapEntry(key, value);
         }
 
-        return new MapProperty(entries, propType.InnerType?.Type.ToString(), propType.ValueType?.Type.ToString());
+        return new MapProperty(entries, propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
     }
 
     #endregion
@@ -455,35 +470,120 @@ public class PropertyReader : IPropertyReader
         return new StructProperty(bag, structType);
     }
 
-    protected virtual StructProperty ReadStructByType(ArchiveReader ar, PropertyReadContext context, UsmapPropertyType propType, ReadContext readContext)
+    protected virtual StructProperty ReadStructByType(ArchiveReader ar, PropertyReadContext context, PropertyType propType, ReadContext readContext)
     {
         if (readContext == ReadContext.Zero)
-            return new StructProperty(new PropertyBag(), propType.StructType);
+            return new StructProperty(new PropertyBag(), propType.StructName);
 
-        var structType = propType.StructType;
+        var structType = propType.StructName;
 
         // Get cached flattened properties (includes inherited ones)
-        var allProperties = context.TypeResolver.GetFlattenedProperties(structType ?? "");
+        var allProperties = context.TypeRegistry.GetFlattenedProperties(structType ?? "");
         if (allProperties == null)
-            throw new InvalidOperationException($"No schema found for struct type '{structType}'. Ensure usmap mappings are loaded.");
+            throw new InvalidOperationException($"No type definition found for struct type '{structType}'. Ensure usmap mappings are loaded.");
 
-        // Structs are read by iterating all properties in schema order - no unversioned header
-        var bag = new PropertyBag(allProperties.Length);
-        for (int i = 0; i < allProperties.Length; i++)
+        // Check if this is a compact struct (serialized without unversioned header)
+        if (CompactStructTypes.Contains(structType ?? ""))
         {
-            var prop = allProperties[i];
-            if (prop != null)
+            // Compact structs are read by iterating all properties in schema order
+            var bag = new PropertyBag(allProperties.Length);
+            for (int i = 0; i < allProperties.Length; i++)
             {
-                var value = ReadPropertyByType(ar, context, prop.PropertyType, ReadContext.Normal);
-                bag.Add(prop.Name, value);
+                var prop = allProperties[i];
+                if (prop != null)
+                {
+                    var value = ReadPropertyByType(ar, context, prop.Type, ReadContext.Normal);
+                    bag.Add(prop.Name, value);
+                }
             }
+            return new StructProperty(bag, structType);
         }
-        return new StructProperty(bag, structType);
+        else
+        {
+            // Regular structs have an unversioned header
+            var header = ReadUnversionedHeader(ar);
+            if (!header.HasValues)
+                return new StructProperty(new PropertyBag(), structType);
+
+            var bag = new PropertyBag();
+            int schemaIndex = 0;
+            int zeroMaskIndex = 0;
+
+            foreach (var fragment in header.Fragments)
+            {
+                schemaIndex += fragment.SkipNum;
+
+                for (int i = 0; i < fragment.ValueNum; i++)
+                {
+                    bool isZero = false;
+                    if (fragment.HasAnyZeroes)
+                    {
+                        isZero = zeroMaskIndex < header.ZeroMask.Length && header.ZeroMask[zeroMaskIndex];
+                        zeroMaskIndex++;
+                    }
+
+                    var prop = schemaIndex < allProperties.Length ? allProperties[schemaIndex] : null;
+                    if (prop != null)
+                    {
+                        var propReadContext = isZero ? ReadContext.Zero : ReadContext.Normal;
+                        var value = ReadPropertyByType(ar, context, prop.Type, propReadContext);
+                        bag.Add(prop.Name, value);
+                    }
+
+                    schemaIndex++;
+                }
+            }
+            return new StructProperty(bag, structType);
+        }
     }
 
     #endregion
 
     #region Helpers
+
+    /// <summary>
+    /// Structs that use "identical" serialization (all properties in order, no unversioned header).
+    /// These are typically math types and other simple POD structs.
+    /// </summary>
+    private static readonly HashSet<string> CompactStructTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Math types
+        "Vector", "Vector2D", "Vector4", "Vector2f", "Vector3f", "Vector4f",
+        "IntVector", "IntVector2", "IntVector4",
+        "IntPoint", "Int32Point", "Int64Point", "UintPoint", "Uint32Point", "Uint64Point",
+        "Rotator", "Rotator3d", "Rotator3f",
+        "Quat", "Quat4d", "Quat4f",
+        "Matrix", "Matrix44d", "Matrix44f",
+        "Transform", "Transform3d", "Transform3f",
+        "Plane", "Plane4d", "Plane4f",
+        "Box", "Box2D", "Box2f", "Box3d", "Box3f",
+        "BoxSphereBounds",
+        "OrientedBox",
+        "Ray", "Ray3d", "Ray3f",
+        "Sphere", "Sphere3d", "Sphere3f",
+        // Color types
+        "Color", "LinearColor",
+        // Other compact types
+        "Guid",
+        "DateTime",
+        "Timespan",
+        "FrameNumber",
+        "SoftObjectPath",
+        "SoftClassPath",
+        "TopLevelAssetPath",
+        "PrimaryAssetType",
+        "PrimaryAssetId",
+        "GameplayTag",
+        "GameplayTagContainer",
+        "NavAgentSelector",
+        "PointerToUberGraphFrame",
+        "PerPlatformInt",
+        "PerPlatformFloat",
+        "PerPlatformBool",
+        "PerQualityLevelInt",
+        "PerQualityLevelFloat",
+        "FontCharacter",
+    };
 
     protected virtual PropertyValue ReadUnknownProperty(ArchiveReader ar, int size)
     {
@@ -501,24 +601,6 @@ public class PropertyReader : IPropertyReader
 
         var name = nameTable[index];
         return number > 0 ? $"{name}_{number - 1}" : name;
-    }
-
-    /// <summary>
-    /// Gets property definition at schema index, walking inheritance chain.
-    /// </summary>
-    protected static UsmapProperty? GetPropertyAtIndex(ITypeResolver resolver, UsmapSchema schema, int index)
-    {
-        if (schema.Properties.TryGetValue(index, out var prop))
-            return prop;
-
-        if (schema.SuperType != null)
-        {
-            var parent = resolver.GetSchema(schema.SuperType);
-            if (parent != null)
-                return GetPropertyAtIndex(resolver, parent, index);
-        }
-
-        return null;
     }
 
     #endregion

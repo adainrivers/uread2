@@ -1,6 +1,6 @@
 using URead2.Assets.Models;
 using URead2.Deserialization.Properties;
-using URead2.Deserialization.TypeMappings;
+using URead2.TypeResolution;
 
 namespace URead2.Deserialization.Abstractions;
 
@@ -18,9 +18,9 @@ public class PropertyReadContext
     public required string[] NameTable { get; init; }
 
     /// <summary>
-    /// Type resolver for schema lookup.
+    /// Type registry for type and schema lookup.
     /// </summary>
-    public required ITypeResolver TypeResolver { get; init; }
+    public required TypeRegistry TypeRegistry { get; init; }
 
     /// <summary>
     /// Import table for resolving object references to external objects.

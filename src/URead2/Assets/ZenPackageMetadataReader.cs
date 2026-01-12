@@ -315,9 +315,15 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
 
         // ClassIndex (FPackageObjectIndex: 8 bytes)
         ulong classRaw = archive.ReadUInt64();
+        var classRef = PackageObjectIndex.FromRaw(classRaw);
         string className = ResolveClassName(classRaw, imports, ScriptObjectIndex);
 
-        // Skip SuperIndex (8) and TemplateIndex (8) to reach PublicExportHash
+        // SuperIndex (FPackageObjectIndex: 8 bytes)
+        ulong superRaw = archive.ReadUInt64();
+        var superRef = PackageObjectIndex.FromRaw(superRaw);
+        string? superClassName = ResolveSuperClassName(superRaw, imports, ScriptObjectIndex);
+
+        // Skip TemplateIndex (8) to reach PublicExportHash
         archive.Position = startPos + 56; // PublicExportHash is at offset 56
         ulong publicExportHash = archive.ReadUInt64();
 
@@ -327,7 +333,11 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
 
         archive.Position = startPos + ExportEntrySize;
 
-        return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic, publicExportHash);
+        return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic, publicExportHash, superClassName)
+        {
+            ClassRef = classRef,
+            SuperRef = superRef
+        };
     }
 
     private static string ResolveClassName(ulong classRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
@@ -337,20 +347,29 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
 
         int type = (int)(classRaw >> 62);
 
-        switch (type)
+        return type switch
         {
-            case 0: // Export - class is in this package
-                return "LocalClass";
-            case 1: // ScriptImport - resolve from global data
-                var resolved = scriptObjectIndex?.ResolveImport(classRaw);
-                return resolved ?? "ScriptClass";
-            case 2: // PackageImport - store hash index for post-load resolution
-                // Lower 32 bits = ImportedPublicExportHashIndex
-                uint hashIdx = (uint)(classRaw & 0xFFFFFFFF);
-                return $"ExternalClass_{hashIdx}";
-            default:
-                return "Unknown";
-        }
+            0 => "", // Export - resolved later via ClassRef
+            1 => scriptObjectIndex?.ResolveImport(classRaw) ?? "", // ScriptImport
+            2 => "", // PackageImport - resolved later via ClassRef
+            _ => ""
+        };
+    }
+
+    private static string? ResolveSuperClassName(ulong superRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
+    {
+        if (superRaw == ~0UL)
+            return null;
+
+        int type = (int)(superRaw >> 62);
+
+        return type switch
+        {
+            0 => null, // Export - resolved later via SuperRef
+            1 => scriptObjectIndex?.ResolveImport(superRaw), // ScriptImport
+            2 => null, // PackageImport - resolved later via SuperRef
+            _ => null
+        };
     }
 
     /// <summary>
