@@ -13,5 +13,14 @@ public record AssetMetadata(
     /// For IO Store packages, the header size to add to export offsets.
     /// For PAK packages, this is 0 (offsets are absolute).
     /// </summary>
-    int CookedHeaderSize = 0
+    int CookedHeaderSize = 0,
+    /// <summary>
+    /// True if the package uses unversioned property serialization.
+    /// </summary>
+    bool IsUnversioned = false,
+    /// <summary>
+    /// Public export hashes for PackageImport resolution (IO Store only).
+    /// Index by ImportedPublicExportHashIndex to get the hash, then match against export's PublicExportHash.
+    /// </summary>
+    ulong[]? ImportedPublicExportHashes = null
 );

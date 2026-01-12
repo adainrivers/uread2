@@ -79,6 +79,11 @@ public class PropertyReader : IPropertyReader
         if (!header.HasValues)
             return;
 
+        // Get cached flattened properties to avoid repeated inheritance walks
+        var allProperties = context.TypeResolver.GetFlattenedProperties(className);
+        if (allProperties == null)
+            return;
+
         int schemaIndex = 0;
         int zeroMaskIndex = 0;
 
@@ -95,7 +100,7 @@ public class PropertyReader : IPropertyReader
                     zeroMaskIndex++;
                 }
 
-                var prop = GetPropertyAtIndex(context.TypeResolver, schema, schemaIndex);
+                var prop = schemaIndex < allProperties.Length ? allProperties[schemaIndex] : null;
                 if (prop != null)
                 {
                     var readContext = isZero ? ReadContext.Zero : ReadContext.Normal;
@@ -133,7 +138,7 @@ public class PropertyReader : IPropertyReader
                 ValueType = ReadFName(ar, nameTable)
             },
 
-            _ => new PropertyTagData()
+            _ => PropertyTagData.Empty
         };
     }
 
@@ -191,17 +196,17 @@ public class PropertyReader : IPropertyReader
     {
         return propType.Type switch
         {
-            EPropertyType.BoolProperty => new BoolProperty(ar, readContext),
-            EPropertyType.Int8Property => new Int8Property(ar, readContext),
-            EPropertyType.ByteProperty => new ByteProperty(ar, readContext),
-            EPropertyType.Int16Property => new Int16Property(ar, readContext),
-            EPropertyType.UInt16Property => new UInt16Property(ar, readContext),
-            EPropertyType.IntProperty => new IntProperty(ar, readContext),
-            EPropertyType.UInt32Property => new UInt32Property(ar, readContext),
-            EPropertyType.Int64Property => new Int64Property(ar, readContext),
-            EPropertyType.UInt64Property => new UInt64Property(ar, readContext),
-            EPropertyType.FloatProperty => new FloatProperty(ar, readContext),
-            EPropertyType.DoubleProperty => new DoubleProperty(ar, readContext),
+            EPropertyType.BoolProperty => BoolProperty.Create(ar, readContext),
+            EPropertyType.Int8Property => Int8Property.Create(ar, readContext),
+            EPropertyType.ByteProperty => ByteProperty.Create(ar, readContext),
+            EPropertyType.Int16Property => Int16Property.Create(ar, readContext),
+            EPropertyType.UInt16Property => UInt16Property.Create(ar, readContext),
+            EPropertyType.IntProperty => IntProperty.Create(ar, readContext),
+            EPropertyType.UInt32Property => UInt32Property.Create(ar, readContext),
+            EPropertyType.Int64Property => Int64Property.Create(ar, readContext),
+            EPropertyType.UInt64Property => UInt64Property.Create(ar, readContext),
+            EPropertyType.FloatProperty => FloatProperty.Create(ar, readContext),
+            EPropertyType.DoubleProperty => DoubleProperty.Create(ar, readContext),
             EPropertyType.StrProperty => new StrProperty(ar, readContext),
             EPropertyType.NameProperty => new NameProperty(ar, context.NameTable, readContext),
             EPropertyType.TextProperty => new TextProperty(ar, readContext),
@@ -215,7 +220,7 @@ public class PropertyReader : IPropertyReader
             EPropertyType.SetProperty => ReadSetByType(ar, context, propType, readContext),
             EPropertyType.MapProperty => ReadMapByType(ar, context, propType, readContext),
             EPropertyType.StructProperty => ReadStructByType(ar, context, propType, readContext),
-            _ => new ByteProperty(0)
+            _ => ByteProperty.Zero
         };
     }
 
@@ -268,7 +273,7 @@ public class PropertyReader : IPropertyReader
         var elements = new PropertyValue[count];
         for (int i = 0; i < count; i++)
         {
-            elements[i] = ReadPropertyValue(ar, context, innerType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Array);
+            elements[i] = ReadPropertyValue(ar, context, innerType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Array);
         }
 
         return new ArrayProperty(elements, innerType);
@@ -310,7 +315,7 @@ public class PropertyReader : IPropertyReader
 
         for (int i = 0; i < numToRemove; i++)
         {
-            ReadPropertyValue(ar, context, elementType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Map);
+            ReadPropertyValue(ar, context, elementType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Map);
         }
 
         var count = ar.ReadInt32();
@@ -320,7 +325,7 @@ public class PropertyReader : IPropertyReader
         var elements = new PropertyValue[count];
         for (int i = 0; i < count; i++)
         {
-            elements[i] = ReadPropertyValue(ar, context, elementType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Map);
+            elements[i] = ReadPropertyValue(ar, context, elementType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Map);
         }
 
         return new SetProperty(elements, elementType);
@@ -374,7 +379,7 @@ public class PropertyReader : IPropertyReader
 
         for (int i = 0; i < numToRemove; i++)
         {
-            ReadPropertyValue(ar, context, keyType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Map);
+            ReadPropertyValue(ar, context, keyType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Map);
         }
 
         var count = ar.ReadInt32();
@@ -384,8 +389,8 @@ public class PropertyReader : IPropertyReader
         var entries = new MapEntry[count];
         for (int i = 0; i < count; i++)
         {
-            var key = ReadPropertyValue(ar, context, keyType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Map);
-            var value = ReadPropertyValue(ar, context, valueType ?? "ByteProperty", new PropertyTagData(), 0, ReadContext.Map);
+            var key = ReadPropertyValue(ar, context, keyType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Map);
+            var value = ReadPropertyValue(ar, context, valueType ?? "ByteProperty", PropertyTagData.Empty, 0, ReadContext.Map);
             entries[i] = new MapEntry(key, value);
         }
 
@@ -456,24 +461,24 @@ public class PropertyReader : IPropertyReader
             return new StructProperty(new PropertyBag(), propType.StructType);
 
         var structType = propType.StructType;
-        var schema = context.TypeResolver.GetSchema(structType ?? "");
 
-        if (schema != null)
+        // Get cached flattened properties (includes inherited ones)
+        var allProperties = context.TypeResolver.GetFlattenedProperties(structType ?? "");
+        if (allProperties == null)
+            throw new InvalidOperationException($"No schema found for struct type '{structType}'. Ensure usmap mappings are loaded.");
+
+        // Structs are read by iterating all properties in schema order - no unversioned header
+        var bag = new PropertyBag(allProperties.Length);
+        for (int i = 0; i < allProperties.Length; i++)
         {
-            var bag = new PropertyBag();
-            for (int i = 0; i < schema.PropertyCount; i++)
+            var prop = allProperties[i];
+            if (prop != null)
             {
-                var prop = GetPropertyAtIndex(context.TypeResolver, schema, i);
-                if (prop != null)
-                {
-                    var value = ReadPropertyByType(ar, context, prop.PropertyType, ReadContext.Normal);
-                    bag.Add(prop.Name, value);
-                }
+                var value = ReadPropertyByType(ar, context, prop.PropertyType, ReadContext.Normal);
+                bag.Add(prop.Name, value);
             }
-            return new StructProperty(bag, structType);
         }
-
-        return new StructProperty(new PropertyBag(), structType);
+        return new StructProperty(bag, structType);
     }
 
     #endregion

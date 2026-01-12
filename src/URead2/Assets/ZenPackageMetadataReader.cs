@@ -46,6 +46,19 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         // Read name batch (local names)
         var nameTable = ReadNameBatch(archive);
 
+        // Read ImportedPublicExportHashes
+        ulong[]? importedPublicExportHashes = null;
+        int hashCount = (summary.ImportMapOffset - summary.ImportedPublicExportHashesOffset) / 8;
+        if (hashCount > 0 && hashCount < 1000000 && summary.ImportedPublicExportHashesOffset < streamLength)
+        {
+            archive.Position = summary.ImportedPublicExportHashesOffset;
+            importedPublicExportHashes = new ulong[hashCount];
+            for (int i = 0; i < hashCount && archive.Position + 8 <= streamLength; i++)
+            {
+                importedPublicExportHashes[i] = archive.ReadUInt64();
+            }
+        }
+
         // Read imports
         int importCount = (summary.ExportMapOffset - summary.ImportMapOffset) / ImportEntrySize;
         if (importCount < 0 || importCount > 1000000)
@@ -76,7 +89,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             }
         }
 
-        return new AssetMetadata(name, nameTable, exports, imports, summary.CookedHeaderSize);
+        return new AssetMetadata(name, nameTable, exports, imports, summary.CookedHeaderSize, summary.IsUnversioned, importedPublicExportHashes);
     }
 
     /// <summary>
@@ -92,10 +105,11 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             return null;
 
         archive.Skip(8); // Name (FMappedName)
-        archive.Skip(4); // PackageFlags
+        uint packageFlags = archive.ReadUInt32();
+        bool isUnversioned = (packageFlags & 0x2000) != 0; // PKG_UnversionedProperties
         archive.Skip(4); // CookedHeaderSize
 
-        archive.Skip(4); // ImportedPublicExportHashesOffset
+        int importedPublicExportHashesOffset = archive.ReadInt32();
         int importMapOffset = archive.ReadInt32();
         int exportMapOffset = archive.ReadInt32();
         int exportBundleEntriesOffset = archive.ReadInt32();
@@ -123,7 +137,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         }
 
         // Use HeaderSize as the actual header size (where export data starts)
-        return new ZenSummary(hasVersioningInfo, importMapOffset, exportMapOffset, exportBundleEntriesOffset, (int)headerSize);
+        return new ZenSummary(hasVersioningInfo, importedPublicExportHashesOffset, importMapOffset, exportMapOffset, exportBundleEntriesOffset, (int)headerSize, isUnversioned);
     }
 
     /// <summary>
@@ -303,17 +317,17 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         ulong classRaw = archive.ReadUInt64();
         string className = ResolveClassName(classRaw, imports, ScriptObjectIndex);
 
-        // Skip remaining fields (SuperIndex, TemplateIndex, PublicExportHash, ObjectFlags, FilterFlags)
-        archive.Position = startPos + ExportEntrySize;
+        // Skip SuperIndex (8) and TemplateIndex (8) to reach PublicExportHash
+        archive.Position = startPos + 56; // PublicExportHash is at offset 56
+        ulong publicExportHash = archive.ReadUInt64();
 
         // Read ObjectFlags for IsPublic
-        archive.Position = startPos + 64; // Position of ObjectFlags
         uint objectFlags = archive.ReadUInt32();
         bool isPublic = (objectFlags & 1) != 0;
 
         archive.Position = startPos + ExportEntrySize;
 
-        return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic);
+        return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic, publicExportHash);
     }
 
     private static string ResolveClassName(ulong classRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
@@ -330,9 +344,10 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             case 1: // ScriptImport - resolve from global data
                 var resolved = scriptObjectIndex?.ResolveImport(classRaw);
                 return resolved ?? "ScriptClass";
-            case 2: // PackageImport
-                uint pkgIdx = (uint)((classRaw & 0x3FFFFFFFFFFFFFFFUL) >> 32);
-                return $"ExternalClass_{pkgIdx}";
+            case 2: // PackageImport - store hash index for post-load resolution
+                // Lower 32 bits = ImportedPublicExportHashIndex
+                uint hashIdx = (uint)(classRaw & 0xFFFFFFFF);
+                return $"ExternalClass_{hashIdx}";
             default:
                 return "Unknown";
         }
@@ -343,9 +358,11 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     /// </summary>
     protected record ZenSummary(
         bool HasVersioningInfo,
+        int ImportedPublicExportHashesOffset,
         int ImportMapOffset,
         int ExportMapOffset,
         int ExportBundleEntriesOffset,
-        int CookedHeaderSize
+        int CookedHeaderSize,
+        bool IsUnversioned
     );
 }

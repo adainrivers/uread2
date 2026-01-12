@@ -49,7 +49,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
             exports[i] = ReadExport(archive, nameTable, imports, summary);
         }
 
-        return new AssetMetadata(name, nameTable, exports, imports);
+        return new AssetMetadata(name, nameTable, exports, imports, 0, summary.IsUnversioned);
     }
 
     /// <summary>
@@ -87,6 +87,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
         archive.ReadFString(); // PackageName
         uint packageFlags = archive.ReadUInt32();
         bool isFilterEditorOnly = (packageFlags & 0x80000000) != 0;
+        bool isUnversioned = (packageFlags & 0x2000) != 0; // PKG_UnversionedProperties
 
         int nameCount = archive.ReadInt32();
         int nameOffset = archive.ReadInt32();
@@ -113,7 +114,8 @@ public class UAssetMetadataReader : IAssetMetadataReader
             nameCount, nameOffset,
             importCount, importOffset,
             exportCount, exportOffset,
-            isFilterEditorOnly);
+            isFilterEditorOnly,
+            isUnversioned);
     }
 
     /// <summary>
@@ -254,6 +256,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
         int ImportOffset,
         int ExportCount,
         int ExportOffset,
-        bool IsFilterEditorOnly
+        bool IsFilterEditorOnly,
+        bool IsUnversioned
     );
 }

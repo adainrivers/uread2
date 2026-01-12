@@ -4,7 +4,9 @@ using URead2.Assets.Models;
 using URead2.Containers;
 using URead2.Deserialization;
 using URead2.Deserialization.Abstractions;
+using URead2.Deserialization.Properties;
 using URead2.Deserialization.TypeMappings;
+using URead2.IO;
 using URead2.Profiles.Abstractions;
 using ZenPackageMetadataReader = URead2.Assets.ZenPackageMetadataReader;
 
@@ -93,12 +95,18 @@ public class UEReader : IDisposable
 
     /// <summary>
     /// Gets all assets grouped with their companion files.
-    /// Uses cached results. Optional filter applies to AssetGroup.BasePath.
+    /// Uses cached results.
     /// </summary>
-    public IEnumerable<AssetGroup> GetAssets(Func<string, bool>? pathFilter = null)
-        => pathFilter == null
-            ? Assets.GetAssetGroups()
-            : Assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
+    public IReadOnlyList<AssetGroup> GetAssets()
+        => Assets.GetAssetGroups();
+
+
+    /// <summary>
+    /// Gets all assets grouped with their companion files.
+    /// Uses cached results. Filter applies to AssetGroup.BasePath.
+    /// </summary>
+    public IEnumerable<AssetGroup> GetAssets(Func<string, bool> pathFilter)
+        => Assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
 
     /// <summary>
     /// Opens a stream to read entry content.
@@ -126,6 +134,37 @@ public class UEReader : IDisposable
     /// </summary>
     public ExportData ReadExportData(AssetGroup asset, AssetExport export)
         => Assets.ReadExportData(asset, export);
+
+    /// <summary>
+    /// Gets all exports from an asset.
+    /// Returns empty array if metadata cannot be read.
+    /// </summary>
+    public AssetExport[] GetExports(AssetGroup asset)
+    {
+        var metadata = Assets.ReadMetadata(asset);
+        return metadata?.Exports ?? [];
+    }
+
+    /// <summary>
+    /// Deserializes an export's properties.
+    /// </summary>
+    /// <param name="asset">The asset containing the export.</param>
+    /// <param name="export">The export to deserialize.</param>
+    /// <returns>Deserialized properties, or empty bag if deserialization fails.</returns>
+    public PropertyBag DeserializeExport(AssetGroup asset, AssetExport export)
+    {
+        var metadata = Assets.ReadMetadata(asset);
+        if (metadata is null)
+            return new PropertyBag();
+
+        var context = CreateReadContext(metadata);
+
+        using var exportData = Assets.ReadExportData(asset, export, metadata);
+        using var stream = exportData.AsStream();
+        using var ar = new ArchiveReader(stream);
+
+        return _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
+    }
 
     /// <summary>
     /// Preloads all asset metadata in parallel and builds the global export index.

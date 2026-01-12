@@ -13,6 +13,7 @@ public class TypeResolver : ITypeResolver
     private readonly TypeMappings? _mappings;
     private readonly Dictionary<string, UsmapSchema> _assetSchemas = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, UsmapEnum> _assetEnums = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, UsmapProperty?[]> _flattenedPropertiesCache = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Gets an empty type resolver with no mappings.
@@ -201,4 +202,47 @@ public class TypeResolver : ITypeResolver
     /// Gets all asset-defined enum names.
     /// </summary>
     public IEnumerable<string> AssetEnumNames => _assetEnums.Keys;
+
+    /// <summary>
+    /// Gets flattened properties for a schema including inherited ones.
+    /// Results are cached for performance.
+    /// </summary>
+    public UsmapProperty?[]? GetFlattenedProperties(string typeName)
+    {
+        if (_flattenedPropertiesCache.TryGetValue(typeName, out var cached))
+            return cached;
+
+        var schema = GetSchema(typeName);
+        if (schema == null)
+            return null;
+
+        var properties = new UsmapProperty?[schema.PropertyCount];
+
+        // Fill from current schema
+        foreach (var kvp in schema.Properties)
+        {
+            if (kvp.Key >= 0 && kvp.Key < properties.Length)
+                properties[kvp.Key] = kvp.Value;
+        }
+
+        // Fill missing from parent schemas
+        var currentSchema = schema;
+        while (currentSchema.SuperType != null)
+        {
+            var parent = GetSchema(currentSchema.SuperType);
+            if (parent == null)
+                break;
+
+            foreach (var kvp in parent.Properties)
+            {
+                if (kvp.Key >= 0 && kvp.Key < properties.Length && properties[kvp.Key] == null)
+                    properties[kvp.Key] = kvp.Value;
+            }
+
+            currentSchema = parent;
+        }
+
+        _flattenedPropertiesCache[typeName] = properties;
+        return properties;
+    }
 }

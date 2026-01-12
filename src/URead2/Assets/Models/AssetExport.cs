@@ -9,5 +9,12 @@ public record AssetExport(
     long SerialOffset,
     long SerialSize,
     int OuterIndex = -1,
-    bool IsPublic = false
-);
+    bool IsPublic = false,
+    ulong PublicExportHash = 0
+)
+{
+    /// <summary>
+    /// The class name. Can be updated after resolution.
+    /// </summary>
+    public string ClassName { get; set; } = ClassName;
+}

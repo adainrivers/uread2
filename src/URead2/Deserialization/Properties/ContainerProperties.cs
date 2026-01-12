@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace URead2.Deserialization.Properties;
 
 /// <summary>
@@ -139,12 +141,12 @@ public sealed class PropertyBag
 
     public PropertyBag()
     {
-        _properties = new Dictionary<string, PropertyValue>(StringComparer.OrdinalIgnoreCase);
+        _properties = new Dictionary<string, PropertyValue>(StringComparer.Ordinal);
     }
 
-    public PropertyBag(Dictionary<string, PropertyValue> properties)
+    public PropertyBag(int capacity)
     {
-        _properties = properties;
+        _properties = new Dictionary<string, PropertyValue>(capacity, StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -199,7 +201,8 @@ public sealed class PropertyBag
     /// </summary>
     public void Add(string name, PropertyValue value)
     {
-        _properties[name] = value;
+        ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(_properties, name, out _);
+        slot = value;
     }
 
     /// <summary>

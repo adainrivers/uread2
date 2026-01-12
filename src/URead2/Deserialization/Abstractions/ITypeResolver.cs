@@ -32,4 +32,12 @@ public interface ITypeResolver
     /// Checks if this resolver has the given enum.
     /// </summary>
     bool HasEnum(string enumName);
+
+    /// <summary>
+    /// Gets flattened properties for a schema including inherited ones.
+    /// Results may be cached for performance.
+    /// </summary>
+    /// <param name="typeName">The type name.</param>
+    /// <returns>Array of properties indexed by schema index, or null if schema not found.</returns>
+    UsmapProperty?[]? GetFlattenedProperties(string typeName);
 }

@@ -181,13 +181,14 @@ public sealed class DelegateProperty : PropertyValue<DelegateValue>
     {
         if (readContext == ReadContext.Zero)
         {
-            Value = new DelegateValue(ObjectReference.Null, null);
+            Value = default;
             return;
         }
 
-        var objectIndex = ar.ReadInt32();
-        var functionName = ar.ReadFString();
-        Value = new DelegateValue(context.ResolveReference(objectIndex), functionName);
+        // Skip reading delegate data - just advance the stream
+        ar.ReadInt32(); // objectIndex
+        ar.ReadFString(); // functionName
+        Value = default;
     }
 }
 
@@ -214,16 +215,17 @@ public sealed class MulticastDelegateProperty : PropertyValue<DelegateValue[]>
             return;
         }
 
+        // Skip reading delegate data - just advance the stream
         var count = ar.ReadInt32();
-        var delegates = new DelegateValue[count];
+        if (count < 0 || count > 10000)
+            throw new InvalidDataException($"MulticastDelegateProperty count out of range: {count}");
 
         for (int i = 0; i < count; i++)
         {
-            var objectIndex = ar.ReadInt32();
-            var functionName = ar.ReadFString();
-            delegates[i] = new DelegateValue(context.ResolveReference(objectIndex), functionName);
+            ar.ReadInt32(); // objectIndex
+            ar.ReadFString(); // functionName - must read to advance stream
         }
 
-        Value = delegates;
+        Value = [];
     }
 }

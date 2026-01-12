@@ -16,6 +16,11 @@ public readonly struct ExportData : IDisposable
     public ReadOnlySpan<byte> Data => _buffer.AsSpan(0, _length);
 
     /// <summary>
+    /// Creates a MemoryStream over the buffer without copying.
+    /// </summary>
+    public MemoryStream AsStream() => new(_buffer ?? [], 0, _length, writable: false);
+
+    /// <summary>
     /// Length of the export data in bytes.
     /// </summary>
     public int Length => _length;

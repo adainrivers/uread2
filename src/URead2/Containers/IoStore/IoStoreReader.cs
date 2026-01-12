@@ -32,7 +32,7 @@ public class IoStoreReader : IContainerReader
 
     public IEnumerable<IAssetEntry> ReadEntries(string filePath, IProfile profile, byte[]? aesKey = null)
     {
-        Log.Debug("Reading IO Store TOC: {FilePath}", filePath);
+        Log.Verbose("Reading IO Store TOC: {FilePath}", filePath);
 
         using var archive = new ArchiveReader(filePath);
 
@@ -49,7 +49,7 @@ public class IoStoreReader : IContainerReader
             yield break;
         }
 
-        Log.Debug("IO Store version {Version}, EntryCount={EntryCount}, Encrypted={Encrypted}, Indexed={Indexed}",
+        Log.Verbose("IO Store version {Version}, EntryCount={EntryCount}, Encrypted={Encrypted}, Indexed={Indexed}",
             header.Version, header.EntryCount, header.IsEncrypted, header.IsIndexed);
 
         var casFilePath = Path.ChangeExtension(filePath, ".ucas");
@@ -230,7 +230,7 @@ public class IoStoreReader : IContainerReader
         if (!header.IsEncrypted || aesKey == null)
             return (archive, false);
 
-        Log.Debug("Decrypting IO Store directory index");
+        Log.Verbose("Decrypting IO Store directory index");
 
         int alignedSize = Crypto.AesDecryptor.Align16(header.DirectoryIndexSize);
         var encryptedData = archive.ReadBytes(alignedSize);

@@ -26,7 +26,7 @@ public class PakReader : IContainerReader
 
     public IEnumerable<IAssetEntry> ReadEntries(string filePath, IProfile profile, byte[]? aesKey = null)
     {
-        Log.Debug("Reading pak file: {FilePath}", filePath);
+        Log.Verbose("Reading pak file: {FilePath}", filePath);
 
         using var archive = new ArchiveReader(filePath);
 
@@ -37,7 +37,7 @@ public class PakReader : IContainerReader
             yield break;
         }
 
-        Log.Debug("Pak version {Version}, IndexOffset={IndexOffset}, IndexSize={IndexSize}, Encrypted={Encrypted}",
+        Log.Verbose("Pak version {Version}, IndexOffset={IndexOffset}, IndexSize={IndexSize}, Encrypted={Encrypted}",
             info.Version, info.IndexOffset, info.IndexSize, info.IsIndexEncrypted);
 
         foreach (var entry in ReadIndex(archive, info, filePath, aesKey))
@@ -102,7 +102,7 @@ public class PakReader : IContainerReader
 
         if (info.IsIndexEncrypted && aesKey != null)
         {
-            Log.Debug("Decrypting pak index");
+            Log.Verbose("Decrypting pak index");
 
             int alignedSize = Crypto.AesDecryptor.Align16((int)info.IndexSize);
             var encryptedData = archive.ReadBytes(alignedSize);
@@ -139,7 +139,7 @@ public class PakReader : IContainerReader
             var encodedEntriesSize = indexArchive.ReadInt32();
             var encodedEntries = indexArchive.ReadBytes(encodedEntriesSize);
 
-            Log.Debug("DirectoryIndexOffset={DirectoryIndexOffset}, IndexOffset={IndexOffset}, IndexSize={IndexSize}, EncodedEntriesSize={EncodedEntriesSize}, CurrentPos={CurrentPos}",
+            Log.Verbose("DirectoryIndexOffset={DirectoryIndexOffset}, IndexOffset={IndexOffset}, IndexSize={IndexSize}, EncodedEntriesSize={EncodedEntriesSize}, CurrentPos={CurrentPos}",
                 directoryIndexOffset, info.IndexOffset, info.IndexSize, encodedEntriesSize, indexArchive.Position);
 
             // Read directory index - stored at directoryIndexOffset in the pak file
