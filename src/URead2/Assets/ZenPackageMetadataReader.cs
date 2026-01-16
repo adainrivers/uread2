@@ -59,6 +59,14 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             }
         }
 
+        // Read ImportedPackageNames (UE5.3+)
+        string[]? importedPackageNames = null;
+        if (summary.ImportedPackageNamesOffset > 0 && summary.ImportedPackageNamesOffset < streamLength)
+        {
+            archive.Position = summary.ImportedPackageNamesOffset;
+            importedPackageNames = ReadImportedPackageNames(archive, summary.CookedHeaderSize - summary.ImportedPackageNamesOffset);
+        }
+
         // Read imports
         int importCount = (summary.ExportMapOffset - summary.ImportMapOffset) / ImportEntrySize;
         if (importCount < 0 || importCount > 1000000)
@@ -70,7 +78,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             archive.Position = summary.ImportMapOffset;
             for (int i = 0; i < importCount && archive.Position + ImportEntrySize <= streamLength; i++)
             {
-                imports[i] = ReadImport(archive);
+                imports[i] = ReadImport(archive, importedPackageNames);
             }
         }
 
@@ -89,7 +97,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             }
         }
 
-        return new AssetMetadata(name, nameTable, exports, imports, summary.CookedHeaderSize, summary.IsUnversioned, importedPublicExportHashes);
+        return new AssetMetadata(name, nameTable, exports, imports, summary.CookedHeaderSize, summary.IsUnversioned, importedPublicExportHashes, importedPackageNames);
     }
 
     /// <summary>
@@ -120,24 +128,31 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         // - UE5.0-5.2: GraphDataOffset (4)
         // We try to detect the format and skip appropriately
         int field1 = archive.ReadInt32(); // GraphDataOffset or DependencyBundleHeadersOffset
+        int importedPackageNamesOffset = -1;
 
         // Check if we have more data for the new format (UE5.3+)
         long currentPos = archive.Position;
         if (currentPos + 8 <= archive.Length)
         {
-            int field2 = archive.ReadInt32();
-            int field3 = archive.ReadInt32();
+            int field2 = archive.ReadInt32(); // DependencyBundleEntriesOffset
+            int field3 = archive.ReadInt32(); // ImportedPackageNamesOffset
 
-            // Heuristic: In new format, field3 should be after ExportBundleEntriesOffset
-            // If it's not, revert to old format position
-            if (field3 <= exportBundleEntriesOffset)
+            // Heuristic: In new format (UE5.3+), the fields should form a valid sequence
+            // field1 = DependencyBundleHeadersOffset (after ExportBundleEntriesOffset)
+            // field2 = DependencyBundleEntriesOffset (after field1)
+            // field3 = ImportedPackageNamesOffset (after field2, before headerSize)
+            if (field1 >= exportBundleEntriesOffset && field2 >= field1 && field3 >= field2 && field3 < (int)headerSize)
+            {
+                importedPackageNamesOffset = field3;
+            }
+            else
             {
                 archive.Position = currentPos;
             }
         }
 
         // Use HeaderSize as the actual header size (where export data starts)
-        return new ZenSummary(hasVersioningInfo, importedPublicExportHashesOffset, importMapOffset, exportMapOffset, exportBundleEntriesOffset, (int)headerSize, isUnversioned);
+        return new ZenSummary(hasVersioningInfo, importedPublicExportHashesOffset, importMapOffset, exportMapOffset, exportBundleEntriesOffset, (int)headerSize, isUnversioned, importedPackageNamesOffset);
     }
 
     /// <summary>
@@ -239,9 +254,38 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     }
 
     /// <summary>
+    /// Reads imported package names from the header (UE5.3+).
+    /// Format: Count (4 bytes), then Count strings (each is FString).
+    /// </summary>
+    protected virtual string[] ReadImportedPackageNames(ArchiveReader archive, int maxSize)
+    {
+        if (archive.Position + 4 > archive.Length)
+            return [];
+
+        int count = archive.ReadInt32();
+        if (count <= 0 || count > 100000)
+            return [];
+
+        var names = new string[count];
+        for (int i = 0; i < count && archive.Position < archive.Length; i++)
+        {
+            try
+            {
+                names[i] = archive.ReadFString();
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        return names;
+    }
+
+    /// <summary>
     /// Reads an import entry. Override for custom formats.
     /// </summary>
-    protected virtual AssetImport ReadImport(ArchiveReader archive)
+    protected virtual AssetImport ReadImport(ArchiveReader archive, string[]? importedPackageNames = null)
     {
         ulong typeAndId = archive.ReadUInt64();
 
@@ -250,24 +294,59 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         ulong value = typeAndId & 0x3FFFFFFFFFFFFFFFUL;
 
         string name, className, packageName;
+        int exportHashIdx = -1;
 
         switch (type)
         {
             case 1: // ScriptImport - resolve from global script objects
-                var resolved = ScriptObjectIndex?.ResolveImport(typeAndId);
-                name = resolved ?? $"ScriptImport_0x{value:X}";
-                className = resolved != null ? name : "ScriptObject";
-                packageName = "/Script";
+                var resolved = ScriptObjectIndex?.ResolveImportWithModule(typeAndId);
+                if (resolved.HasValue)
+                {
+                    name = resolved.Value.ObjectName;
+                    className = "Class"; // Script imports are typically class references
+                    var module = resolved.Value.ModuleName;
+                    if (module != null)
+                    {
+                        // Module name might already include /Script/ prefix
+                        packageName = module.StartsWith("/Script/", StringComparison.OrdinalIgnoreCase)
+                            ? module
+                            : $"/Script/{module}";
+                    }
+                    else
+                    {
+                        packageName = "/Script";
+                    }
+                }
+                else
+                {
+                    name = $"ScriptImport_0x{value:X}";
+                    className = "ScriptObject";
+                    packageName = "/Script";
+                }
                 break;
 
-            case 2: // PackageImport - resolve from container header (not implemented yet)
-                // PackageImport references require the container header to resolve
+            case 2: // PackageImport - resolve from imported package names
                 // The value contains: ImportedPackageIndex (bits 32-61) and ImportedPublicExportHashIndex (bits 0-31)
                 uint pkgIdx = (uint)(value >> 32);
-                uint exportHashIdx = (uint)value;
-                name = $"PackageImport_{pkgIdx}_{exportHashIdx:X8}";
-                className = "Object";
-                packageName = $"/Package_{pkgIdx}";
+                exportHashIdx = (int)(value & 0xFFFFFFFF);
+
+                // Try to get package name from imported package names array
+                if (importedPackageNames != null && pkgIdx < importedPackageNames.Length &&
+                    !string.IsNullOrEmpty(importedPackageNames[pkgIdx]))
+                {
+                    packageName = importedPackageNames[pkgIdx];
+                    // Extract asset name from package path (last part after /)
+                    var lastSlash = packageName.LastIndexOf('/');
+                    name = lastSlash >= 0 ? packageName[(lastSlash + 1)..] : packageName;
+                    className = "Object"; // Type will be resolved via PublicExportHash later
+                }
+                else
+                {
+                    // Store placeholder - will be resolved using PublicExportHash index
+                    name = $"PackageImport_{pkgIdx}_{exportHashIdx:X8}";
+                    className = "Object";
+                    packageName = $"/Package_{pkgIdx}";
+                }
                 break;
 
             default:
@@ -277,7 +356,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
                 break;
         }
 
-        return new AssetImport(name, className, packageName);
+        return new AssetImport(name, className, packageName, exportHashIdx);
     }
 
     /// <summary>
@@ -316,59 +395,31 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         // ClassIndex (FPackageObjectIndex: 8 bytes)
         ulong classRaw = archive.ReadUInt64();
         var classRef = PackageObjectIndex.FromRaw(classRaw);
-        string className = ResolveClassName(classRaw, imports, ScriptObjectIndex);
 
         // SuperIndex (FPackageObjectIndex: 8 bytes)
         ulong superRaw = archive.ReadUInt64();
         var superRef = PackageObjectIndex.FromRaw(superRaw);
-        string? superClassName = ResolveSuperClassName(superRaw, imports, ScriptObjectIndex);
 
-        // Skip TemplateIndex (8) to reach PublicExportHash
-        archive.Position = startPos + 56; // PublicExportHash is at offset 56
+        // TemplateIndex (FPackageObjectIndex: 8 bytes)
+        ulong templateRaw = archive.ReadUInt64();
+        var templateRef = PackageObjectIndex.FromRaw(templateRaw);
+
+        // PublicExportHash (8 bytes)
         ulong publicExportHash = archive.ReadUInt64();
 
-        // Read ObjectFlags for IsPublic
-        uint objectFlags = archive.ReadUInt32();
-        bool isPublic = (objectFlags & 1) != 0;
+        // Read ObjectFlags
+        uint objectFlagsRaw = archive.ReadUInt32();
+        var objectFlags = (EObjectFlags)objectFlagsRaw;
+        bool isPublic = (objectFlagsRaw & 1) != 0;
 
         archive.Position = startPos + ExportEntrySize;
 
-        return new AssetExport(objectName, className, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic, publicExportHash, superClassName)
+        // Create export with raw refs - resolution happens later in AssetRegistry
+        return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, isPublic, publicExportHash, objectFlags)
         {
             ClassRef = classRef,
-            SuperRef = superRef
-        };
-    }
-
-    private static string ResolveClassName(ulong classRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
-    {
-        if (classRaw == ~0UL)
-            return "Object";
-
-        int type = (int)(classRaw >> 62);
-
-        return type switch
-        {
-            0 => "", // Export - resolved later via ClassRef
-            1 => scriptObjectIndex?.ResolveImport(classRaw) ?? "", // ScriptImport
-            2 => "", // PackageImport - resolved later via ClassRef
-            _ => ""
-        };
-    }
-
-    private static string? ResolveSuperClassName(ulong superRaw, AssetImport[] imports, ScriptObjectIndex? scriptObjectIndex)
-    {
-        if (superRaw == ~0UL)
-            return null;
-
-        int type = (int)(superRaw >> 62);
-
-        return type switch
-        {
-            0 => null, // Export - resolved later via SuperRef
-            1 => scriptObjectIndex?.ResolveImport(superRaw), // ScriptImport
-            2 => null, // PackageImport - resolved later via SuperRef
-            _ => null
+            SuperRef = superRef,
+            TemplateRef = templateRef
         };
     }
 
@@ -382,6 +433,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         int ExportMapOffset,
         int ExportBundleEntriesOffset,
         int CookedHeaderSize,
-        bool IsUnversioned
+        bool IsUnversioned,
+        int ImportedPackageNamesOffset = -1
     );
 }

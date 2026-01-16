@@ -22,5 +22,10 @@ public record AssetMetadata(
     /// Public export hashes for PackageImport resolution (IO Store only).
     /// Index by ImportedPublicExportHashIndex to get the hash, then match against export's PublicExportHash.
     /// </summary>
-    ulong[]? ImportedPublicExportHashes = null
+    ulong[]? ImportedPublicExportHashes = null,
+    /// <summary>
+    /// Imported package names/paths for PackageImport resolution (IO Store UE5.3+).
+    /// Index by ImportedPackageIndex to get the package path.
+    /// </summary>
+    string[]? ImportedPackageNames = null
 );

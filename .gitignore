@@ -62,6 +62,7 @@ Desktop.ini
 # Claude
 .claude/
 .mcp.json
+tmpclaude*
 
 # Local test settings (contains machine-specific paths)
 testsettings.local.json
@@ -72,3 +73,5 @@ src/URead2.Local.sln
 src/URead2.TestConsole
 src/URead2.Tests.Integration.Local
 CLAUDE.md
+
+

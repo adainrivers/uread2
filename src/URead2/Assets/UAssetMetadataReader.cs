@@ -46,7 +46,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
         var exports = new AssetExport[summary.ExportCount];
         for (int i = 0; i < summary.ExportCount; i++)
         {
-            exports[i] = ReadExport(archive, nameTable, imports, summary);
+            exports[i] = ReadExport(archive, nameTable, imports, exports, summary, i);
         }
 
         return new AssetMetadata(name, nameTable, exports, imports, 0, summary.IsUnversioned);
@@ -156,13 +156,14 @@ public class UAssetMetadataReader : IAssetMetadataReader
     /// <summary>
     /// Reads an export entry. Override for custom export formats.
     /// </summary>
-    protected virtual AssetExport ReadExport(ArchiveReader archive, string[] nameTable, AssetImport[] imports, PackageSummary summary)
+    protected virtual AssetExport ReadExport(ArchiveReader archive, string[] nameTable, AssetImport[] imports, AssetExport[] exports, PackageSummary summary, int exportIndex)
     {
         int classIndex = archive.ReadInt32();
         int superIndex = archive.ReadInt32();
 
+        int templateIndex = 0;
         if (summary.FileVersionUE4 >= 378)
-            archive.Skip(4); // TemplateIndex
+            templateIndex = archive.ReadInt32();
 
         int outerIndex = archive.ReadInt32();
         var objectName = ReadFName(archive, nameTable);
@@ -210,11 +211,19 @@ public class UAssetMetadataReader : IAssetMetadataReader
         if (summary.FileVersionUE4 >= 507)
             archive.Skip(20);
 
-        // Resolve class name from imports
-        string className = ResolveClassName(classIndex, imports);
-        string? superClassName = ResolveSuperClassName(superIndex, imports);
+        // Create export - resolve references to ResolvedRef objects
+        var export = new AssetExport(objectName, serialOffset, serialSize, outerIndex, isPublic, 0);
 
-        return new AssetExport(objectName, className, serialOffset, serialSize, outerIndex, isPublic, 0, superClassName);
+        // Resolve class reference
+        export.Class = ResolveToRef(classIndex, imports, exports, nameTable);
+
+        // Resolve super reference
+        export.Super = ResolveToRef(superIndex, imports, exports, nameTable);
+
+        // Resolve template reference
+        export.Template = ResolveToRef(templateIndex, imports, exports, nameTable);
+
+        return export;
     }
 
     private static string ReadFName(ArchiveReader archive, string[] nameTable)
@@ -229,38 +238,57 @@ public class UAssetMetadataReader : IAssetMetadataReader
         return number > 0 ? $"{name}_{number - 1}" : name;
     }
 
-    private static string ResolveClassName(int classIndex, AssetImport[] imports)
+    /// <summary>
+    /// Resolves a package index to a ResolvedRef.
+    /// For imports, creates full reference. For local exports, creates partial reference.
+    /// </summary>
+    private static ResolvedRef? ResolveToRef(int packageIndex, AssetImport[] imports, AssetExport[] exports, string[] nameTable)
     {
-        if (classIndex == 0)
-            return "Object";
-
-        // Negative = import, Positive = export
-        if (classIndex < 0)
-        {
-            int importIndex = -classIndex - 1;
-            if (importIndex < imports.Length)
-                return imports[importIndex].Name; // Name is the actual class, ClassName is its type
-        }
-
-        return "Unknown";
-    }
-
-    private static string? ResolveSuperClassName(int superIndex, AssetImport[] imports)
-    {
-        if (superIndex == 0)
+        if (packageIndex == 0)
             return null;
 
-        // Negative = import, Positive = export
-        if (superIndex < 0)
+        // Negative = import
+        if (packageIndex < 0)
         {
-            int importIndex = -superIndex - 1;
+            int importIndex = -packageIndex - 1;
             if (importIndex < imports.Length)
-                return imports[importIndex].Name;
+            {
+                var import = imports[importIndex];
+                return new ResolvedRef
+                {
+                    ClassName = import.ClassName,
+                    Name = import.Name,
+                    PackagePath = import.PackageName,
+                    ExportIndex = -1 // Unknown for imports
+                };
+            }
         }
         else
         {
-            // Positive = local export (BP inheriting from BP in same package)
-            return $"LocalSuper_{superIndex - 1}";
+            // Positive = local export (may not be read yet)
+            int exportIndex = packageIndex - 1;
+            if (exportIndex < exports.Length && exports[exportIndex] != null)
+            {
+                var exp = exports[exportIndex];
+                return new ResolvedRef
+                {
+                    ClassName = exp.ClassName,
+                    Name = exp.Name,
+                    PackagePath = "", // Will be filled in by AssetRegistry
+                    ExportIndex = exportIndex
+                };
+            }
+            else
+            {
+                // Export not yet read - create placeholder
+                return new ResolvedRef
+                {
+                    ClassName = "Object",
+                    Name = $"Export_{exportIndex}",
+                    PackagePath = "",
+                    ExportIndex = exportIndex
+                };
+            }
         }
 
         return null;

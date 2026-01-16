@@ -34,10 +34,15 @@ public class AssetRegistry
     // Name-based index for type lookup: "ExportName" -> List<ExportIndexEntry>
     private Dictionary<string, List<ExportIndexEntry>>? _exportNameIndex;
 
-    // Hash index for PackageImport class resolution: PublicExportHash -> ClassName
-    private Dictionary<ulong, string>? _publicExportHashIndex;
+    // Hash index for PackageImport resolution: PublicExportHash -> ExportInfo
+    private Dictionary<ulong, ExportHashInfo>? _publicExportHashIndex;
 
-    // Singleton instance for global access (e.g., from PackageResolver)
+    /// <summary>
+    /// Info stored in hash index for import resolution.
+    /// </summary>
+    public readonly record struct ExportHashInfo(string Name, string ClassName, string PackagePath, int ExportIndex);
+
+    // Singleton instance for global access
     public static AssetRegistry? Instance { get; private set; }
 
     private static ContainerRegistry Containers => ContainerRegistry.Instance
@@ -276,26 +281,119 @@ public class AssetRegistry
 
         // Build hash index and resolve class/super names
         BuildPublicExportHashIndex();
+        ResolveScriptImportRefs();
         ResolveLocalClassNames();
         ResolveExternalClassNames();
+
+        // Pass 2: Resolve all imports using the export hash index
+        ResolveImports();
     }
 
     /// <summary>
-    /// Resolves local class/super references using export indices within the same package.
+    /// Resolves ScriptImport type references using the ScriptObjectIndex.
+    /// These are references to engine classes like Actor, SceneComponent, etc.
     /// </summary>
-    private void ResolveLocalClassNames()
+    private void ResolveScriptImportRefs()
     {
+        var scriptObjectIndex = Containers.ScriptObjectIndex;
+        if (scriptObjectIndex == null)
+            return;
+
         foreach (var (_, metadata) in _metadataCache)
         {
             foreach (var export in metadata.Exports)
             {
+                // Resolve ScriptImport class reference
+                if (export.ClassRef is { Type: Models.PackageObjectType.ScriptImport } classRef)
+                {
+                    var raw = ((ulong)classRef.Type << 62) | classRef.Value;
+                    var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
+                    if (resolved.HasValue)
+                    {
+                        var modulePath = resolved.Value.ModuleName != null
+                            ? $"/Script/{resolved.Value.ModuleName}"
+                            : "/Script";
+                        export.Class = new ResolvedRef
+                        {
+                            ClassName = "Class",
+                            Name = resolved.Value.ObjectName,
+                            PackagePath = modulePath,
+                            ExportIndex = -1
+                        };
+                    }
+                }
+
+                // Resolve ScriptImport super reference
+                if (export.SuperRef is { Type: Models.PackageObjectType.ScriptImport } superRef)
+                {
+                    var raw = ((ulong)superRef.Type << 62) | superRef.Value;
+                    var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
+                    if (resolved.HasValue)
+                    {
+                        var modulePath = resolved.Value.ModuleName != null
+                            ? $"/Script/{resolved.Value.ModuleName}"
+                            : "/Script";
+                        export.Super = new ResolvedRef
+                        {
+                            ClassName = "Class",
+                            Name = resolved.Value.ObjectName,
+                            PackagePath = modulePath,
+                            ExportIndex = -1
+                        };
+                    }
+                }
+
+                // Resolve ScriptImport template reference
+                if (export.TemplateRef is { Type: Models.PackageObjectType.ScriptImport } templateRef)
+                {
+                    var raw = ((ulong)templateRef.Type << 62) | templateRef.Value;
+                    var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
+                    if (resolved.HasValue)
+                    {
+                        var modulePath = resolved.Value.ModuleName != null
+                            ? $"/Script/{resolved.Value.ModuleName}"
+                            : "/Script";
+                        export.Template = new ResolvedRef
+                        {
+                            ClassName = resolved.Value.ObjectName, // For templates, the class is the object itself
+                            Name = $"Default__{resolved.Value.ObjectName}",
+                            PackagePath = modulePath,
+                            ExportIndex = -1
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves local class/super/template references using export indices within the same package.
+    /// </summary>
+    private void ResolveLocalClassNames()
+    {
+        foreach (var (path, metadata) in _metadataCache)
+        {
+            // Get package path without extension
+            var packagePath = GetPackagePath(path);
+
+            for (int i = 0; i < metadata.Exports.Length; i++)
+            {
+                var export = metadata.Exports[i];
+
                 // Resolve local class reference
                 if (export.ClassRef is { Type: Models.PackageObjectType.Export } classRef)
                 {
                     var idx = classRef.ExportIndex;
                     if (idx >= 0 && idx < metadata.Exports.Length)
                     {
-                        export.ClassName = metadata.Exports[idx].Name;
+                        var target = metadata.Exports[idx];
+                        export.Class = new ResolvedRef
+                        {
+                            ClassName = target.ClassName,
+                            Name = target.Name,
+                            PackagePath = packagePath,
+                            ExportIndex = idx
+                        };
                     }
                 }
 
@@ -305,7 +403,31 @@ public class AssetRegistry
                     var idx = superRef.ExportIndex;
                     if (idx >= 0 && idx < metadata.Exports.Length)
                     {
-                        export.SuperClassName = metadata.Exports[idx].Name;
+                        var target = metadata.Exports[idx];
+                        export.Super = new ResolvedRef
+                        {
+                            ClassName = target.ClassName,
+                            Name = target.Name,
+                            PackagePath = packagePath,
+                            ExportIndex = idx
+                        };
+                    }
+                }
+
+                // Resolve local template reference
+                if (export.TemplateRef is { Type: Models.PackageObjectType.Export } templateRef)
+                {
+                    var idx = templateRef.ExportIndex;
+                    if (idx >= 0 && idx < metadata.Exports.Length)
+                    {
+                        var target = metadata.Exports[idx];
+                        export.Template = new ResolvedRef
+                        {
+                            ClassName = target.ClassName,
+                            Name = target.Name,
+                            PackagePath = packagePath,
+                            ExportIndex = idx
+                        };
                     }
                 }
             }
@@ -313,22 +435,35 @@ public class AssetRegistry
     }
 
     /// <summary>
-    /// Builds the PublicExportHash -> ClassName index from all public exports.
+    /// Gets package path without extension.
+    /// </summary>
+    private static string GetPackagePath(string path)
+    {
+        var lastDot = path.LastIndexOf('.');
+        return lastDot > 0 ? path[..lastDot] : path;
+    }
+
+    /// <summary>
+    /// Builds the PublicExportHash -> ExportInfo index from all public exports.
     /// </summary>
     private void BuildPublicExportHashIndex()
     {
-        _publicExportHashIndex = new Dictionary<ulong, string>();
+        _publicExportHashIndex = new Dictionary<ulong, ExportHashInfo>();
 
-        foreach (var (_, metadata) in _metadataCache)
+        foreach (var (path, metadata) in _metadataCache)
         {
-            foreach (var export in metadata.Exports)
+            var packagePath = GetPackagePath(path);
+
+            for (int i = 0; i < metadata.Exports.Length; i++)
             {
+                var export = metadata.Exports[i];
+
                 // Only index public exports with valid hashes
                 if (export.IsPublic && export.PublicExportHash != 0)
                 {
-                    // Use the export name as the class name (this is for class exports)
+                    var info = new ExportHashInfo(export.Name, export.ClassName, packagePath, i);
                     // Don't overwrite if we already have an entry - first one wins
-                    _publicExportHashIndex.TryAdd(export.PublicExportHash, export.Name);
+                    _publicExportHashIndex.TryAdd(export.PublicExportHash, info);
                 }
             }
         }
@@ -357,9 +492,15 @@ public class AssetRegistry
                     if (hashIdx < metadata.ImportedPublicExportHashes.Length)
                     {
                         var hash = metadata.ImportedPublicExportHashes[hashIdx];
-                        if (_publicExportHashIndex.TryGetValue(hash, out var className))
+                        if (_publicExportHashIndex.TryGetValue(hash, out var info))
                         {
-                            export.ClassName = className;
+                            export.Class = new ResolvedRef
+                            {
+                                ClassName = info.ClassName,
+                                Name = info.Name,
+                                PackagePath = info.PackagePath,
+                                ExportIndex = info.ExportIndex
+                            };
                         }
                     }
                 }
@@ -371,11 +512,79 @@ public class AssetRegistry
                     if (hashIdx < metadata.ImportedPublicExportHashes.Length)
                     {
                         var hash = metadata.ImportedPublicExportHashes[hashIdx];
-                        if (_publicExportHashIndex.TryGetValue(hash, out var superName))
+                        if (_publicExportHashIndex.TryGetValue(hash, out var info))
                         {
-                            export.SuperClassName = superName;
+                            export.Super = new ResolvedRef
+                            {
+                                ClassName = info.ClassName,
+                                Name = info.Name,
+                                PackagePath = info.PackagePath,
+                                ExportIndex = info.ExportIndex
+                            };
                         }
                     }
+                }
+
+                // Resolve external template reference (PackageImport)
+                if (export.TemplateRef is { Type: Models.PackageObjectType.PackageImport } templateRef)
+                {
+                    var hashIdx = templateRef.HashIndex;
+                    if (hashIdx < metadata.ImportedPublicExportHashes.Length)
+                    {
+                        var hash = metadata.ImportedPublicExportHashes[hashIdx];
+                        if (_publicExportHashIndex.TryGetValue(hash, out var info))
+                        {
+                            export.Template = new ResolvedRef
+                            {
+                                ClassName = info.ClassName,
+                                Name = info.Name,
+                                PackagePath = info.PackagePath,
+                                ExportIndex = info.ExportIndex
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Resolves all imports using the PublicExportHash index.
+    /// This is pass 2 of metadata loading - imports are resolved to their actual target exports.
+    /// </summary>
+    private void ResolveImports()
+    {
+        if (_publicExportHashIndex == null)
+            return;
+
+        foreach (var (_, metadata) in _metadataCache)
+        {
+            // Skip packages without imports or hashes
+            if (metadata.Imports == null || metadata.ImportedPublicExportHashes == null)
+                continue;
+
+            foreach (var import in metadata.Imports)
+            {
+                // Skip already resolved imports (ScriptImports are resolved during read)
+                if (import.IsResolved)
+                    continue;
+
+                // Only resolve imports with valid hash index
+                if (import.PublicExportHashIndex < 0 ||
+                    import.PublicExportHashIndex >= metadata.ImportedPublicExportHashes.Length)
+                    continue;
+
+                var hash = metadata.ImportedPublicExportHashes[import.PublicExportHashIndex];
+                if (hash == 0)
+                    continue;
+
+                if (_publicExportHashIndex.TryGetValue(hash, out var exportInfo))
+                {
+                    // Update import with resolved data
+                    import.Name = exportInfo.Name;
+                    import.ClassName = exportInfo.ClassName;
+                    import.PackageName = exportInfo.PackagePath;
+                    import.IsResolved = true;
                 }
             }
         }
@@ -420,6 +629,32 @@ public class AssetRegistry
     /// Gets the number of indexed exports.
     /// </summary>
     public int ExportIndexCount => _exportIndex?.Count ?? 0;
+
+    /// <summary>
+    /// Resolves an export name by its PublicExportHash.
+    /// </summary>
+    /// <param name="hash">The public export hash.</param>
+    /// <returns>The export name, or null if not found.</returns>
+    public string? ResolveExportNameByHash(ulong hash)
+    {
+        if (_publicExportHashIndex == null || hash == 0)
+            return null;
+
+        return _publicExportHashIndex.TryGetValue(hash, out var info) ? info.Name : null;
+    }
+
+    /// <summary>
+    /// Resolves full export info by its PublicExportHash.
+    /// </summary>
+    /// <param name="hash">The public export hash.</param>
+    /// <returns>The export info, or null if not found.</returns>
+    public ExportHashInfo? ResolveExportByHash(ulong hash)
+    {
+        if (_publicExportHashIndex == null || hash == 0)
+            return null;
+
+        return _publicExportHashIndex.TryGetValue(hash, out var info) ? info : null;
+    }
 
     /// <summary>
     /// Reads export binary data using a pooled buffer.

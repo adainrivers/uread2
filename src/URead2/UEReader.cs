@@ -19,7 +19,6 @@ namespace URead2;
 public class UEReader : IDisposable
 {
     private readonly IProfile _profile;
-    private PackageResolver? _packageResolver;
     private TypeRegistry? _typeRegistry;
     private bool _disposed;
 
@@ -270,33 +269,16 @@ public class UEReader : IDisposable
     public int ExportIndexCount => Assets.ExportIndexCount;
 
     /// <summary>
-    /// Gets the package resolver for cross-package reference resolution.
-    /// Created lazily on first access.
-    /// </summary>
-    public PackageResolver PackageResolver
-    {
-        get
-        {
-            _packageResolver ??= new PackageResolver();
-            return _packageResolver;
-        }
-    }
-
-    /// <summary>
     /// Gets the profile used by this reader.
     /// </summary>
     public IProfile Profile => _profile;
 
     /// <summary>
     /// Creates a PropertyReadContext for deserializing an asset.
-    /// Includes cross-package resolution support if metadata has been preloaded.
+    /// Imports are pre-resolved during PreloadAllMetadata().
     /// </summary>
     /// <param name="metadata">The asset metadata.</param>
-    /// <param name="enableCrossPackageResolution">
-    /// If true, enables cross-package import resolution.
-    /// Requires PreloadAllMetadata() to have been called for best results.
-    /// </param>
-    public PropertyReadContext CreateReadContext(AssetMetadata metadata, bool enableCrossPackageResolution = true)
+    public PropertyReadContext CreateReadContext(AssetMetadata metadata)
     {
         return new PropertyReadContext
         {
@@ -304,15 +286,14 @@ public class UEReader : IDisposable
             TypeRegistry = TypeRegistry,
             Imports = metadata.Imports,
             Exports = metadata.Exports,
-            PackagePath = GetPackagePath(metadata.Name),
-            PackageResolver = enableCrossPackageResolution ? PackageResolver : null
+            PackagePath = GetPackagePath(metadata.Name)
         };
     }
 
     /// <summary>
     /// Creates a PropertyReadContext for deserializing an asset with a custom type registry.
     /// </summary>
-    public PropertyReadContext CreateReadContext(AssetMetadata metadata, TypeRegistry typeRegistry, bool enableCrossPackageResolution = true)
+    public PropertyReadContext CreateReadContext(AssetMetadata metadata, TypeRegistry typeRegistry)
     {
         return new PropertyReadContext
         {
@@ -320,8 +301,7 @@ public class UEReader : IDisposable
             TypeRegistry = typeRegistry,
             Imports = metadata.Imports,
             Exports = metadata.Exports,
-            PackagePath = GetPackagePath(metadata.Name),
-            PackageResolver = enableCrossPackageResolution ? PackageResolver : null
+            PackagePath = GetPackagePath(metadata.Name)
         };
     }
 

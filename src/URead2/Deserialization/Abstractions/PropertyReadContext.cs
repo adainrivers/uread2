@@ -4,11 +4,9 @@ using URead2.TypeResolution;
 
 namespace URead2.Deserialization.Abstractions;
 
-using ResolvedReference = URead2.Deserialization.ResolvedReference;
-
 /// <summary>
 /// Context for property reading operations.
-/// Provides name table, type resolution, and cross-package reference resolution.
+/// Provides name table, type resolution, and object reference resolution.
 /// </summary>
 public class PropertyReadContext
 {
@@ -24,6 +22,7 @@ public class PropertyReadContext
 
     /// <summary>
     /// Import table for resolving object references to external objects.
+    /// Imports are pre-resolved during metadata loading.
     /// </summary>
     public AssetImport[]? Imports { get; init; }
 
@@ -38,12 +37,6 @@ public class PropertyReadContext
     public string? PackagePath { get; init; }
 
     /// <summary>
-    /// Optional package resolver for cross-package lookups.
-    /// When set, enables full resolution of imports to their actual exports.
-    /// </summary>
-    public IPackageResolver? PackageResolver { get; init; }
-
-    /// <summary>
     /// Resolves a package index to an ObjectReference.
     /// </summary>
     public ObjectReference ResolveReference(int packageIndex)
@@ -53,28 +46,19 @@ public class PropertyReadContext
 
         if (packageIndex < 0)
         {
-            // Import reference
+            // Import reference - imports are pre-resolved during metadata loading
             int importIndex = -packageIndex - 1;
             if (Imports != null && importIndex >= 0 && importIndex < Imports.Length)
             {
                 var import = Imports[importIndex];
 
-                // Try cross-package resolution if resolver available
-                ResolvedReference? resolved = null;
-                if (PackageResolver != null)
-                {
-                    resolved = PackageResolver.ResolveImport(import);
-                }
-
                 return new ObjectReference
                 {
-                    Type = resolved?.Type ?? import.ClassName,
-                    Name = resolved?.Name ?? import.Name,
-                    Path = resolved?.PackagePath ?? import.PackageName,
+                    Type = import.ClassName,
+                    Name = import.Name,
+                    Path = import.PackageName,
                     Index = packageIndex,
-                    ResolvedExport = resolved?.Export,
-                    ResolvedMetadata = resolved?.Metadata,
-                    IsFullyResolved = resolved?.IsResolved ?? false
+                    IsFullyResolved = import.IsResolved
                 };
             }
         }
@@ -119,20 +103,5 @@ public class PropertyReadContext
         if (Exports == null || exportIndex < 0 || exportIndex >= Exports.Length)
             return null;
         return Exports[exportIndex];
-    }
-
-    /// <summary>
-    /// Resolves an import to its target export in another package.
-    /// Returns null if PackageResolver is not set or import cannot be resolved.
-    /// </summary>
-    public ResolvedReference? ResolveImportToExport(int importIndex)
-    {
-        if (PackageResolver == null || Imports == null)
-            return null;
-
-        if (importIndex < 0 || importIndex >= Imports.Length)
-            return null;
-
-        return PackageResolver.ResolveImport(Imports[importIndex]);
     }
 }

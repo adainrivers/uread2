@@ -246,9 +246,106 @@ public sealed class PropertyBag
             ArrayProperty ap => ConvertArray(ap.Value),
             SetProperty setp => ConvertArray(setp.Value),
             MapProperty mp => ConvertMap(mp.Value),
-            ObjectProperty op => op.Value?.Path ?? op.Value?.Name,
+            ObjectProperty op => ConvertObjectReference(op.Value),
+            EnumProperty ep => FormatEnumValue(ep),
             _ => ConvertGenericValue(value.GenericValue)
         };
+    }
+
+    private static string? FormatEnumValue(EnumProperty ep)
+    {
+        if (ep.Value == null)
+            return null;
+
+        // Format as EnumType::Value (e.g., "ECollisionResponse::ECR_Block")
+        if (!string.IsNullOrEmpty(ep.EnumType))
+            return $"{ep.EnumType}::{ep.Value}";
+
+        return ep.Value;
+    }
+
+    private static object? ConvertObjectReference(ObjectReference? reference)
+    {
+        if (reference == null || reference.IsNull)
+            return null;
+
+        // CUE4Parse format: { "ObjectName": "Type'Name'", "ObjectPath": "/Path.Index" }
+        var result = new Dictionary<string, object?>();
+
+        // Build ObjectName: Type'Name'
+        if (reference.Type != null && reference.Name != null)
+        {
+            result["ObjectName"] = $"{reference.Type}'{reference.Name}'";
+        }
+        else if (reference.Name != null)
+        {
+            result["ObjectName"] = reference.Name;
+        }
+
+        // Build ObjectPath based on reference type
+        string? objectPath = BuildObjectPath(reference);
+        if (objectPath != null)
+        {
+            result["ObjectPath"] = objectPath;
+        }
+
+        return result;
+    }
+
+    private static string? BuildObjectPath(ObjectReference reference)
+    {
+        // Script imports: /Script/Module paths are returned as-is (no index)
+        if (reference.Path != null && reference.Path.StartsWith("/Script/", StringComparison.OrdinalIgnoreCase))
+        {
+            return reference.Path;
+        }
+
+        // Legacy: /Script without module - append name if available
+        if (reference.Path != null && reference.Path.Equals("/Script", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrEmpty(reference.Name))
+                return $"/Script/{reference.Name}";
+            return "/Script";
+        }
+
+        // Package imports (Type == "Package"): just the path, no index
+        if (reference.Type != null && reference.Type.Equals("Package", StringComparison.OrdinalIgnoreCase))
+        {
+            if (reference.Path != null)
+                return FormatObjectPath(reference.Path);
+            return null;
+        }
+
+        // Unresolved placeholder paths - return as-is
+        if (reference.Path != null && reference.Path.StartsWith("/Package_"))
+        {
+            return reference.Path;
+        }
+
+        // Local exports: /Path.ExportIndex
+        if (reference.IsExport && reference.Path != null)
+        {
+            var formattedPath = FormatObjectPath(reference.Path);
+            return $"{formattedPath}.{reference.ExportIndex}";
+        }
+
+        // Imports with resolved path: /Path.0
+        if (reference.IsImport && reference.Path != null)
+        {
+            var formattedPath = FormatObjectPath(reference.Path);
+            return $"{formattedPath}.0";
+        }
+
+        return null;
+    }
+
+    private static string FormatObjectPath(string path)
+    {
+        // Remove .uasset extension if present
+        if (path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase))
+            path = path[..^7];
+
+        return path;
     }
 
     private static object? ConvertGenericValue(object? value)
