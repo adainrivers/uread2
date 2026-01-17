@@ -104,22 +104,37 @@ public class AssetRegistry
         foreach (var entry in entries)
         {
             var path = entry.Path;
-            var ext = Path.GetExtension(path);
-            var basePath = path[..^ext.Length];
+            // Optimization: avoid Path.GetExtension and string allocation for extension
+            var pathSpan = path.AsSpan();
+            var lastDot = pathSpan.LastIndexOf('.');
+
+            if (lastDot < 0) continue;
+
+            var extSpan = pathSpan.Slice(lastDot);
+
+            // Check extension first before allocating basePath
+            bool isUAsset = extSpan.Equals(".uasset", StringComparison.OrdinalIgnoreCase);
+            bool isUMap = !isUAsset && extSpan.Equals(".umap", StringComparison.OrdinalIgnoreCase);
+            bool isUExp = !isUAsset && !isUMap && extSpan.Equals(".uexp", StringComparison.OrdinalIgnoreCase);
+            bool isUBulk = !isUAsset && !isUMap && !isUExp && extSpan.Equals(".ubulk", StringComparison.OrdinalIgnoreCase);
+
+            if (!isUAsset && !isUMap && !isUExp && !isUBulk)
+                continue; // Skip non-asset files
+
+            // Only allocate basePath if it's a relevant file
+            var basePath = path.Substring(0, lastDot);
 
             if (!byBasePath.TryGetValue(basePath, out var group))
                 group = (null, null, null, false);
 
-            if (ext.Equals(".uasset", StringComparison.OrdinalIgnoreCase))
+            if (isUAsset)
                 group = (entry, group.UExp, group.UBulk, false);
-            else if (ext.Equals(".umap", StringComparison.OrdinalIgnoreCase))
+            else if (isUMap)
                 group = (entry, group.UExp, group.UBulk, true);
-            else if (ext.Equals(".uexp", StringComparison.OrdinalIgnoreCase))
+            else if (isUExp)
                 group = (group.Asset, entry, group.UBulk, group.IsMap);
-            else if (ext.Equals(".ubulk", StringComparison.OrdinalIgnoreCase))
+            else if (isUBulk)
                 group = (group.Asset, group.UExp, entry, group.IsMap);
-            else
-                continue; // Skip non-asset files
 
             byBasePath[basePath] = group;
         }
