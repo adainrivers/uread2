@@ -2,7 +2,6 @@ using System.IO.Compression;
 using K4os.Compression.LZ4;
 using OodleDotNet;
 using Serilog;
-using URead2.IO;
 using ZlibngDotNet;
 
 namespace URead2.Compression;
@@ -40,7 +39,7 @@ public class Decompressor : IDisposable
         Log.Information("Zlib-ng initialized from {DllPath}", dllPath);
     }
 
-    public unsafe void Decompress(
+    public void Decompress(
         ReadOnlySpan<byte> compressed,
         Span<byte> uncompressed,
         CompressionMethod method)
@@ -76,7 +75,7 @@ public class Decompressor : IDisposable
         }
     }
 
-    private unsafe void DecompressZlib(ReadOnlySpan<byte> compressed, Span<byte> uncompressed)
+    private void DecompressZlib(ReadOnlySpan<byte> compressed, Span<byte> uncompressed)
     {
         if (_zlibng != null)
         {
@@ -86,7 +85,7 @@ public class Decompressor : IDisposable
         }
         else
         {
-            using var srcStream = new SpanStream(compressed);
+            using var srcStream = new MemoryStream(compressed.ToArray());
             using var zlibStream = new ZLibStream(srcStream, CompressionMode.Decompress);
             zlibStream.ReadExactly(uncompressed);
         }
@@ -96,7 +95,7 @@ public class Decompressor : IDisposable
     {
         // BCL GZipStream requires Stream, no span-based API available
         // Gzip is rarely used in UE games, so this allocation is acceptable
-        using var srcStream = new SpanStream(compressed);
+        using var srcStream = new MemoryStream(compressed.ToArray());
         using var gzipStream = new GZipStream(srcStream, CompressionMode.Decompress);
         gzipStream.ReadExactly(uncompressed);
     }
