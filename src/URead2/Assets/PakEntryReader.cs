@@ -40,14 +40,12 @@ public class PakEntryReader : IAssetEntryReader
         if (string.IsNullOrEmpty(method))
             return CompressionMethod.None;
 
-        return method.ToUpperInvariant() switch
-        {
-            "ZLIB" => CompressionMethod.Zlib,
-            "GZIP" => CompressionMethod.Gzip,
-            "OODLE" => CompressionMethod.Oodle,
-            "LZ4" => CompressionMethod.LZ4,
-            "ZSTD" => CompressionMethod.Zstd,
-            _ => CompressionMethod.Unknown
-        };
+        if (string.Equals(method, "ZLIB", StringComparison.OrdinalIgnoreCase)) return CompressionMethod.Zlib;
+        if (string.Equals(method, "GZIP", StringComparison.OrdinalIgnoreCase)) return CompressionMethod.Gzip;
+        if (string.Equals(method, "OODLE", StringComparison.OrdinalIgnoreCase)) return CompressionMethod.Oodle;
+        if (string.Equals(method, "LZ4", StringComparison.OrdinalIgnoreCase)) return CompressionMethod.LZ4;
+        if (string.Equals(method, "ZSTD", StringComparison.OrdinalIgnoreCase)) return CompressionMethod.Zstd;
+
+        return CompressionMethod.Unknown;
     }
 }
