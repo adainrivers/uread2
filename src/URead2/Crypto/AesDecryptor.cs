@@ -17,13 +17,7 @@ public class AesDecryptor : IDecryptor
 
         using var aes = Aes.Create();
         aes.Key = key;
-        aes.Mode = CipherMode.ECB;
-        aes.Padding = PaddingMode.None;
-
-        using var decryptor = aes.CreateDecryptor();
-        var temp = data.ToArray();
-        var decrypted = decryptor.TransformFinalBlock(temp, 0, temp.Length);
-        decrypted.CopyTo(data);
+        aes.DecryptEcb(data, data, PaddingMode.None);
     }
 
     public static int Align16(int size) => size + 15 & ~15;
@@ -38,11 +32,9 @@ public class AesDecryptor : IDecryptor
 
         using var aes = Aes.Create();
         aes.Key = key;
-        aes.Mode = CipherMode.ECB;
-        aes.Padding = PaddingMode.None;
-
-        using var decryptor = aes.CreateDecryptor();
-        return decryptor.TransformFinalBlock(data, 0, data.Length);
+        var result = new byte[data.Length];
+        aes.DecryptEcb(data, result, PaddingMode.None);
+        return result;
     }
 
     public static byte[] ParseHexKey(string hexKey)
