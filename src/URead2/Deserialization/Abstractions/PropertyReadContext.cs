@@ -37,6 +37,11 @@ public class PropertyReadContext
     public string? PackagePath { get; init; }
 
     /// <summary>
+    /// Whether properties use unversioned serialization format.
+    /// </summary>
+    public bool IsUnversioned { get; init; }
+
+    /// <summary>
     /// Resolves a package index to an ObjectReference.
     /// </summary>
     public ObjectReference ResolveReference(int packageIndex)

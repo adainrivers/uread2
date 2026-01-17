@@ -286,7 +286,8 @@ public class UEReader : IDisposable
             TypeRegistry = TypeRegistry,
             Imports = metadata.Imports,
             Exports = metadata.Exports,
-            PackagePath = GetPackagePath(metadata.Name)
+            PackagePath = GetPackagePath(metadata.Name),
+            IsUnversioned = metadata.IsUnversioned
         };
     }
 
@@ -301,7 +302,8 @@ public class UEReader : IDisposable
             TypeRegistry = typeRegistry,
             Imports = metadata.Imports,
             Exports = metadata.Exports,
-            PackagePath = GetPackagePath(metadata.Name)
+            PackagePath = GetPackagePath(metadata.Name),
+            IsUnversioned = metadata.IsUnversioned
         };
     }
 

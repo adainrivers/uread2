@@ -246,10 +246,24 @@ public sealed class PropertyBag
             ArrayProperty ap => ConvertArray(ap.Value),
             SetProperty setp => ConvertArray(setp.Value),
             MapProperty mp => ConvertMap(mp.Value),
+            DataTableRowsProperty dtp => ConvertDataTableRows(dtp.Value),
             ObjectProperty op => ConvertObjectReference(op.Value),
             EnumProperty ep => FormatEnumValue(ep),
             _ => ConvertGenericValue(value.GenericValue)
         };
+    }
+
+    private static Dictionary<string, object?> ConvertDataTableRows(Dictionary<string, PropertyBag>? rows)
+    {
+        if (rows == null || rows.Count == 0)
+            return new Dictionary<string, object?>();
+
+        var result = new Dictionary<string, object?>(rows.Count);
+        foreach (var (rowName, rowData) in rows)
+        {
+            result[rowName] = rowData.ToDictionary();
+        }
+        return result;
     }
 
     private static string? FormatEnumValue(EnumProperty ep)

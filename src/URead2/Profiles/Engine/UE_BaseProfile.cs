@@ -46,6 +46,9 @@ public class UE_BaseProfile : IProfile
     {
         var registry = new TypeReaderRegistry();
 
+        // Register DataTable reader
+        registry.Register("DataTable", new DataTableTypeReader(PropertyReader));
+
         // Register classes with native serialization that we skip
         registry.Register([
             // Functions
