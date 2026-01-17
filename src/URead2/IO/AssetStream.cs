@@ -175,6 +175,7 @@ public sealed class AssetStream : Stream
 
         // Rent buffer for raw/compressed data
         byte[] rawBuffer = ArrayPool<byte>.Shared.Rent(rawReadSize);
+        bool returnRawBuffer = true;
         try
         {
             _blockProvider.ReadBlockRaw(blockIndex, rawBuffer);
@@ -195,16 +196,19 @@ public sealed class AssetStream : Stream
             }
             else
             {
-                // Uncompressed - rent and copy (can't reuse rawBuffer as it gets returned)
-                _currentBlockData = ArrayPool<byte>.Shared.Rent(block.CompressedSize);
+                // Uncompressed - reuse rawBuffer
+                _currentBlockData = rawBuffer;
                 _currentBlockDataLength = block.CompressedSize;
                 _currentBlockDataPooled = true;
-                compressedData.CopyTo(_currentBlockData);
+                returnRawBuffer = false;
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rawBuffer);
+            if (returnRawBuffer)
+            {
+                ArrayPool<byte>.Shared.Return(rawBuffer);
+            }
         }
 
         // Cache block bounds for fast path in Read
