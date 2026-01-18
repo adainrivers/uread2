@@ -274,9 +274,34 @@ public class UEReader : IDisposable
     /// <exception cref="ExportReadException">Thrown when a fatal error occurs during deserialization.</exception>
     public PropertyBag DeserializeExport(AssetGroup asset, AssetExport export)
     {
+        if (!TryDeserializeExport(asset, export, out var result, out var error))
+        {
+            throw new ExportReadException(
+                error.ErrorCode,
+                error.Position,
+                error.ExportName,
+                error.AssetPath,
+                error.Detail);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Tries to deserialize an export's properties without throwing.
+    /// </summary>
+    /// <param name="asset">The asset containing the export.</param>
+    /// <param name="export">The export to deserialize.</param>
+    /// <param name="result">The deserialized properties if successful.</param>
+    /// <param name="error">Error information if deserialization failed.</param>
+    /// <returns>True if deserialization succeeded, false otherwise.</returns>
+    public bool TryDeserializeExport(AssetGroup asset, AssetExport export, out PropertyBag result, out ExportReadError error)
+    {
+        error = default;
+        result = new PropertyBag();
+
         var metadata = asset.Metadata;
         if (metadata is null)
-            return new PropertyBag();
+            return true; // Empty but valid
 
         var context = CreateReadContext(metadata);
 
@@ -284,64 +309,53 @@ public class UEReader : IDisposable
         using var stream = exportData.AsStream();
         using var ar = new ArchiveReader(stream);
 
-        PropertyBag result;
+        // TODO: GUID reading is UObject-level serialization, should be moved to a reader component
+        // rather than being in the orchestrator. For now, handle it here before dispatching.
 
-        try
+        // UE serializes ObjectGuid for non-CDO objects before properties
+        if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
         {
-            // Check for custom type reader first
-            var customReader = _profile.TypeReaderRegistry.GetReader(export.ClassName);
-            if (customReader != null)
+            if (ar.TryReadInt32(out var hasGuidRaw) && hasGuidRaw != 0)
             {
-                result = customReader.Read(ar, context, export);
-            }
-            else
-            {
-                // UE serializes ObjectGuid for non-CDO objects before properties
-                // Read and skip the ObjectGuid boolean (and GUID if present)
-                if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
+                if (!ar.TrySkip(16)) // Skip the 16-byte FGuid
                 {
-                    if (ar.TryReadInt32(out var hasGuidRaw) && hasGuidRaw != 0)
-                    {
-                        if (!ar.TrySkip(16)) // Skip the 16-byte FGuid
-                        {
-                            throw new ExportReadException(
-                                ReadErrorCode.StreamOverrun,
-                                ar.Position,
-                                export.Name,
-                                asset.BasePath,
-                                "Expected ObjectGuid but stream too short");
-                        }
-                    }
+                    error = new ExportReadError(
+                        ReadErrorCode.StreamOverrun,
+                        ar.Position,
+                        export.Name,
+                        asset.BasePath,
+                        "Expected ObjectGuid but stream too short");
+                    return false;
                 }
-
-                result = _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
             }
         }
-        catch (EndOfStreamException)
+
+        // Dispatch to custom reader or default property reader
+        var customReader = _profile.TypeReaderRegistry.GetReader(export.ClassName);
+        if (customReader != null)
         {
-            // Stream overrun is a structural error - convert to fatal
-            throw new ExportReadException(
-                ReadErrorCode.StreamOverrun,
-                ar.Position,
-                export.Name,
-                asset.BasePath,
-                $"Unexpected end of stream at position {ar.Position}, length {ar.Length}");
+            result = customReader.Read(ar, context, export);
+        }
+        else
+        {
+            result = _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
         }
 
         // Check for fatal error after reading
         if (context.HasFatalError)
         {
-            throw new ExportReadException(
+            error = new ExportReadError(
                 context.FatalError!.Value,
                 context.FatalPosition,
                 export.Name,
                 asset.BasePath,
                 context.FatalDetail);
+            return false;
         }
 
         // Transfer diagnostics to result
         result.Diagnostics = context.Diagnostics;
-        return result;
+        return true;
     }
 
     /// <summary>

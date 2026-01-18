@@ -1,6 +1,16 @@
 namespace URead2.Deserialization;
 
 /// <summary>
+/// Error information from a failed export deserialization.
+/// </summary>
+public readonly record struct ExportReadError(
+    ReadErrorCode ErrorCode,
+    long Position,
+    string? ExportName,
+    string? AssetPath,
+    string? Detail);
+
+/// <summary>
 /// Exception thrown when export deserialization fails with a fatal error.
 /// </summary>
 public class ExportReadException : Exception

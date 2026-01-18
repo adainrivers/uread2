@@ -209,10 +209,17 @@ public class ArchiveReader : IDisposable
         if (length < 0)
         {
             // Unicode string (UTF-16LE)
+            // Guard against overflow: -Int32.MinValue overflows to negative
+            if (length == int.MinValue)
+            {
+                _stream.Seek(-4, SeekOrigin.Current);
+                return false;
+            }
+
             int charCount = -length;
             int byteCount = charCount * 2;
 
-            if (byteCount > 1024 * 1024 || byteCount > Remaining)
+            if (byteCount < 0 || byteCount > 1024 * 1024 || byteCount > Remaining)
             {
                 // Seek back since we read the length but can't read the string
                 _stream.Seek(-4, SeekOrigin.Current);
