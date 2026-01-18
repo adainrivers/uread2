@@ -56,4 +56,14 @@ public enum DiagnosticCode
     /// Schema index exceeds available properties.
     /// </summary>
     SchemaIndexOutOfRange,
+
+    /// <summary>
+    /// Map property missing key or value type in schema.
+    /// </summary>
+    MissingMapKeyOrValueType,
+
+    /// <summary>
+    /// FText history type not yet implemented.
+    /// </summary>
+    UnsupportedTextHistoryType,
 }

@@ -540,19 +540,22 @@ public class PropertyReader : IPropertyReader
             return new MapProperty([], propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
         }
 
+        if (propType.InnerType == null || propType.ValueType == null)
+        {
+            context.Warn(DiagnosticCode.MissingMapKeyOrValueType, ar.Position,
+                $"key={propType.InnerType?.Kind.ToString() ?? "null"}, value={propType.ValueType?.Kind.ToString() ?? "null"}");
+            return new MapProperty([], propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
+        }
+
         var entries = new MapEntry[count];
         for (int i = 0; i < count && !context.HasFatalError; i++)
         {
-            var key = propType.InnerType != null
-                ? ReadPropertyByType(ar, context, propType.InnerType, ReadContext.Map)
-                : new ByteProperty(0);
-            var value = propType.ValueType != null
-                ? ReadPropertyByType(ar, context, propType.ValueType, ReadContext.Map)
-                : new ByteProperty(0);
+            var key = ReadPropertyByType(ar, context, propType.InnerType, ReadContext.Map);
+            var value = ReadPropertyByType(ar, context, propType.ValueType, ReadContext.Map);
             entries[i] = new MapEntry(key, value);
         }
 
-        return new MapProperty(entries, propType.InnerType?.Kind.ToString(), propType.ValueType?.Kind.ToString());
+        return new MapProperty(entries, propType.InnerType.Kind.ToString(), propType.ValueType.Kind.ToString());
     }
 
     #endregion

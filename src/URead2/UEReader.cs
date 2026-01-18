@@ -300,9 +300,17 @@ public class UEReader : IDisposable
                 // Read and skip the ObjectGuid boolean (and GUID if present)
                 if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
                 {
-                    if (ar.TryReadInt32(out var hasGuidRaw) && hasGuidRaw != 0 && ar.Position + 16 <= ar.Length)
+                    if (ar.TryReadInt32(out var hasGuidRaw) && hasGuidRaw != 0)
                     {
-                        ar.Position += 16; // Skip the 16-byte FGuid
+                        if (!ar.TrySkip(16)) // Skip the 16-byte FGuid
+                        {
+                            throw new ExportReadException(
+                                ReadErrorCode.StreamOverrun,
+                                ar.Position,
+                                export.Name,
+                                asset.BasePath,
+                                "Expected ObjectGuid but stream too short");
+                        }
                     }
                 }
 

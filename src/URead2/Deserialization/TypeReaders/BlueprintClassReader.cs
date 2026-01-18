@@ -166,7 +166,8 @@ public class BlueprintClassReader : ITypeReader
             FLazyObjectProperty => new PropertyType(PropertyKind.LazyObjectProperty),
             FObjectProperty => new PropertyType(PropertyKind.ObjectProperty), // Base type last
             FNumericProperty => GetNumericPropertyKind(prop),
-            _ => GetPropertyKindByTypeName(prop.GetType().Name)
+            // For base FProperty instances (NameProperty, StrProperty, TextProperty), use stored TypeName
+            _ => GetPropertyKindByTypeName(prop.TypeName)
         };
     }
 
@@ -192,7 +193,7 @@ public class BlueprintClassReader : ITypeReader
 
     private static PropertyType? GetPropertyKindByTypeName(string typeName)
     {
-        // Remove 'F' prefix and 'Property' suffix to get the kind
+        // Remove 'F' prefix if present
         if (typeName.StartsWith('F'))
             typeName = typeName[1..];
 
@@ -201,10 +202,15 @@ public class BlueprintClassReader : ITypeReader
             "NameProperty" => PropertyKind.NameProperty,
             "StrProperty" => PropertyKind.StrProperty,
             "TextProperty" => PropertyKind.TextProperty,
-            "Property" => PropertyKind.ObjectProperty, // Generic fallback
             _ => (PropertyKind?)null
         };
 
-        return kind.HasValue ? new PropertyType(kind.Value) : null;
+        if (!kind.HasValue)
+        {
+            Serilog.Log.Warning("Unknown property type in Blueprint: {TypeName}", typeName);
+            return null;
+        }
+
+        return new PropertyType(kind.Value);
     }
 }

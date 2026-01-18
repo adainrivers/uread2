@@ -51,43 +51,30 @@ public class UE_BaseProfile : IProfile
 
         // Register classes with native serialization that we skip
         registry.Register([
-            // Functions
+            // Functions (bytecode, not properties)
             "Function",
             "DelegateFunction",
             "SparseDelegateFunction",
-            // Native serialization classes
-            "Font",
-            "FontFace",
-            // Enum/Struct definitions
-            "UserDefinedEnum",
-            "UserDefinedStruct",
-            "Enum",
-            // Niagara
+            // Niagara (complex native format)
             "NiagaraScript",
             "NiagaraEmitter",
             "NiagaraSystem",
             "NiagaraParameterCollectionInstance",
             "NiagaraSimulationStageGeneric",
-            // Animation
-            "AnimSequence",
-            "AnimMontage",
-            "PoseAsset",
-            // Curves
-            "CurveFloat",
-            "CurveVector",
-            "CurveLinearColor",
-            // Movie Scene
+            // Movie Scene (complex native format)
             "MovieScene",
             "MovieSceneCompiledData",
             "MovieSceneFloatSection",
             "MovieSceneColorSection",
             "MovieScene2DTransformSection",
-            // Skeletal/Body
-            "SkeletalMesh",
-            "BodySetup",
-            "ClothingAssetCommon",
             // World Partition
             "WorldPartitionLevelStreamingDynamic",
+            // Optimus (shader/compute graphs)
+            "OptimusKernelSource",
+            "OptimusComputeGraph",
+            "OptimusNode_ComponentSource",
+            "OptimusNode_DataInterface",
+            "OptimusNode_CustomComputeKernel",
         ], SkipTypeReader.Instance);
 
         return registry;

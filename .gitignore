@@ -75,3 +75,5 @@ src/URead2.Tests.Integration.Local
 CLAUDE.md
 
 
+/BenchmarkDotNet.Artifacts
+*.log

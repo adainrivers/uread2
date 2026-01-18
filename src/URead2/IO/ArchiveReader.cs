@@ -46,6 +46,17 @@ public class ArchiveReader : IDisposable
         return b >= 0;
     }
 
+    public bool TryReadSByte(out sbyte value)
+    {
+        if (TryReadByte(out byte b))
+        {
+            value = (sbyte)b;
+            return true;
+        }
+        value = 0;
+        return false;
+    }
+
     public bool TryReadBool(out bool value)
     {
         if (TryReadByte(out byte b))
