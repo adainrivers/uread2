@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 using URead2.Assets.Abstractions;
 using URead2.Assets.Models;
 using URead2.Containers;
@@ -23,13 +22,12 @@ public class AssetRegistry
 
     // Cached grouped assets
     private List<AssetGroup>? _cachedAssetGroups;
+    private Dictionary<string, AssetGroup>? _assetGroupByPath;
     private readonly object _groupLock = new();
 
-    // Cached metadata (thread-safe)
-    private readonly ConcurrentDictionary<string, AssetMetadata> _metadataCache = new(StringComparer.OrdinalIgnoreCase);
-
     // Global export index for cross-package resolution: "PackagePath.ExportName" -> ExportIndexEntry
-    private ConcurrentDictionary<string, ExportIndexEntry>? _exportIndex;
+    // Regular Dictionary is safe since writes only happen in BuildExportIndex (single-threaded)
+    private Dictionary<string, ExportIndexEntry>? _exportIndex;
 
     // Name-based index for type lookup: "ExportName" -> List<ExportIndexEntry>
     private Dictionary<string, List<ExportIndexEntry>>? _exportNameIndex;
@@ -84,8 +82,28 @@ public class AssetRegistry
                 return _cachedAssetGroups;
 
             _cachedAssetGroups = GroupAssetsCore(Containers.GetEntries());
+
+            // Build path index
+            _assetGroupByPath = new Dictionary<string, AssetGroup>(
+                _cachedAssetGroups.Count,
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var group in _cachedAssetGroups)
+            {
+                _assetGroupByPath[group.BasePath] = group;
+            }
+
             return _cachedAssetGroups;
         }
+    }
+
+    /// <summary>
+    /// Gets an AssetGroup by its base path.
+    /// </summary>
+    public AssetGroup? GetAssetGroupByPath(string basePath)
+    {
+        // Ensure groups are loaded
+        _ = GetAssetGroups();
+        return _assetGroupByPath?.GetValueOrDefault(basePath);
     }
 
     /// <summary>
@@ -96,7 +114,7 @@ public class AssetRegistry
         return GroupAssetsCore(entries);
     }
 
-    private static List<AssetGroup> GroupAssetsCore(IEnumerable<IAssetEntry> entries)
+    private List<AssetGroup> GroupAssetsCore(IEnumerable<IAssetEntry> entries)
     {
         var byBasePath = new Dictionary<string, (IAssetEntry? Asset, IAssetEntry? UExp, IAssetEntry? UBulk, bool IsMap)>(
             StringComparer.OrdinalIgnoreCase);
@@ -143,7 +161,7 @@ public class AssetRegistry
         foreach (var (basePath, group) in byBasePath)
         {
             if (group.Asset != null)
-                result.Add(new AssetGroup(basePath, group.Asset, group.IsMap, group.UExp, group.UBulk));
+                result.Add(new AssetGroup(this, basePath, group.Asset, group.IsMap, group.UExp, group.UBulk));
         }
         return result;
     }
@@ -167,68 +185,23 @@ public class AssetRegistry
     }
 
     /// <summary>
-    /// Reads asset metadata (names, imports, exports) from an entry.
-    /// Results are cached for subsequent calls. Thread-safe.
-    /// Only works for .uasset/.umap files.
+    /// Loads asset metadata from disk. Called internally by AssetGroup.Metadata.
     /// </summary>
-    public AssetMetadata? ReadMetadata(IAssetEntry entry)
+    internal AssetMetadata? LoadMetadata(IAssetEntry entry)
     {
-        // Check cache first
-        if (_metadataCache.TryGetValue(entry.Path, out var cached))
-            return cached;
-
-        // Read from container
         using var stream = OpenRead(entry);
-        var metadata = entry switch
+        return entry switch
         {
             PakEntry => _uAssetReader?.ReadMetadata(stream, entry.Path),
             IoStoreEntry => _zenPackageReader?.ReadMetadata(stream, entry.Path),
             _ => null
         };
-
-        // Cache result (only if non-null)
-        if (metadata != null)
-            _metadataCache.TryAdd(entry.Path, metadata);
-
-        return metadata;
     }
 
     /// <summary>
-    /// Reads asset metadata (names, imports, exports) from an asset group.
-    /// Results are cached for subsequent calls. Thread-safe.
+    /// Gets the number of assets with loaded metadata.
     /// </summary>
-    public AssetMetadata? ReadMetadata(AssetGroup asset)
-    {
-        return ReadMetadata(asset.Asset);
-    }
-
-    /// <summary>
-    /// Gets cached metadata without reading from container.
-    /// Returns null if not cached.
-    /// </summary>
-    public AssetMetadata? GetCachedMetadata(string path)
-    {
-        return _metadataCache.TryGetValue(path, out var metadata) ? metadata : null;
-    }
-
-    /// <summary>
-    /// Gets the number of cached metadata entries.
-    /// </summary>
-    public int MetadataCacheCount => _metadataCache.Count;
-
-    /// <summary>
-    /// Clears the metadata cache and export index.
-    /// </summary>
-    public void ClearMetadataCache()
-    {
-        _metadataCache.Clear();
-        _exportIndex?.Clear();
-        _exportIndex = null;
-        _exportNameIndex?.Clear();
-        _exportNameIndex = null;
-        _publicExportHashIndex?.Clear();
-        _publicExportHashIndex = null;
-    }
+    public int MetadataCacheCount => _cachedAssetGroups?.Count(a => a.Metadata != null) ?? 0;
 
     /// <summary>
     /// Preloads all asset metadata in parallel and builds the global export index.
@@ -238,6 +211,7 @@ public class AssetRegistry
     /// <param name="progress">Optional progress callback (assetsLoaded, totalAssets).</param>
     public void PreloadAllMetadata(int? maxDegreeOfParallelism = null, Action<int, int>? progress = null)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var assets = GetAssetGroups();
         var totalCount = assets.Count;
         var loadedCount = 0;
@@ -247,15 +221,33 @@ public class AssetRegistry
             MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount
         };
 
+        Serilog.Log.Information("Starting parallel metadata read for {Count} assets", totalCount);
         Parallel.ForEach(assets, options, asset =>
         {
-            ReadMetadata(asset);
+            // Load metadata directly into the asset (triggers lazy load or sets directly)
+            asset.Metadata = LoadMetadata(asset.Asset);
             var count = Interlocked.Increment(ref loadedCount);
             progress?.Invoke(count, totalCount);
         });
+        Serilog.Log.Information("Parallel metadata read completed in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
 
         // Build export index after all metadata is loaded
+        sw.Restart();
         BuildExportIndex();
+        Serilog.Log.Information("BuildExportIndex completed in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Gets the script module path, handling cases where /Script/ prefix may already be present.
+    /// </summary>
+    private static string GetScriptModulePath(string? moduleName)
+    {
+        if (moduleName == null)
+            return "/Script";
+
+        return moduleName.StartsWith("/Script/", StringComparison.OrdinalIgnoreCase)
+            ? moduleName
+            : $"/Script/{moduleName}";
     }
 
     /// <summary>
@@ -264,13 +256,31 @@ public class AssetRegistry
     /// </summary>
     public void BuildExportIndex()
     {
-        _exportIndex = new ConcurrentDictionary<string, ExportIndexEntry>(StringComparer.OrdinalIgnoreCase);
-        _exportNameIndex = new Dictionary<string, List<ExportIndexEntry>>(StringComparer.OrdinalIgnoreCase);
+        var assets = GetAssetGroups();
 
-        foreach (var (path, metadata) in _metadataCache)
+        // Pre-calculate total export count for dictionary sizing
+        int totalExports = 0;
+        foreach (var asset in assets)
         {
+            var metadata = asset.Metadata;
+            if (metadata != null)
+                totalExports += metadata.Exports.Length;
+        }
+
+        // Use regular Dictionary during building (single-threaded), then wrap
+        // Pre-sizing avoids rehashing overhead
+        var exportIndex = new Dictionary<string, ExportIndexEntry>(totalExports, StringComparer.OrdinalIgnoreCase);
+        _exportNameIndex = new Dictionary<string, List<ExportIndexEntry>>(totalExports / 10, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var asset in assets)
+        {
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
+            var path = asset.Asset.Path;
             // Get package path without extension
-            var packagePath = path;
+            var packagePath = path.AsSpan();
             var lastDot = packagePath.LastIndexOf('.');
             if (lastDot > 0)
                 packagePath = packagePath[..lastDot];
@@ -280,9 +290,17 @@ public class AssetRegistry
                 var export = metadata.Exports[i];
                 var entry = new ExportIndexEntry(metadata, i);
 
-                // Key format: "PackagePath.ExportName"
-                var exportKey = $"{packagePath}.{export.Name}";
-                _exportIndex.TryAdd(exportKey, entry);
+                // Optimized key creation using string.Create (avoids intermediate string allocations)
+                var exportName = export.Name.AsSpan();
+                var exportKey = string.Create(packagePath.Length + 1 + exportName.Length, (path, lastDot, export.Name), static (span, state) =>
+                {
+                    var pkgPath = state.lastDot > 0 ? state.path.AsSpan(0, state.lastDot) : state.path.AsSpan();
+                    pkgPath.CopyTo(span);
+                    span[pkgPath.Length] = '.';
+                    state.Name.AsSpan().CopyTo(span[(pkgPath.Length + 1)..]);
+                });
+
+                exportIndex.TryAdd(exportKey, entry);
 
                 // Also index by name only for type lookups
                 if (!_exportNameIndex.TryGetValue(export.Name, out var list))
@@ -293,6 +311,8 @@ public class AssetRegistry
                 list.Add(entry);
             }
         }
+
+        _exportIndex = exportIndex;
 
         // Build hash index and resolve class/super names
         BuildPublicExportHashIndex();
@@ -314,8 +334,12 @@ public class AssetRegistry
         if (scriptObjectIndex == null)
             return;
 
-        foreach (var (_, metadata) in _metadataCache)
+        foreach (var asset in GetAssetGroups())
         {
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
             foreach (var export in metadata.Exports)
             {
                 // Resolve ScriptImport class reference
@@ -325,9 +349,7 @@ public class AssetRegistry
                     var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
                     if (resolved.HasValue)
                     {
-                        var modulePath = resolved.Value.ModuleName != null
-                            ? $"/Script/{resolved.Value.ModuleName}"
-                            : "/Script";
+                        var modulePath = GetScriptModulePath(resolved.Value.ModuleName);
                         export.Class = new ResolvedRef
                         {
                             ClassName = "Class",
@@ -345,9 +367,7 @@ public class AssetRegistry
                     var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
                     if (resolved.HasValue)
                     {
-                        var modulePath = resolved.Value.ModuleName != null
-                            ? $"/Script/{resolved.Value.ModuleName}"
-                            : "/Script";
+                        var modulePath = GetScriptModulePath(resolved.Value.ModuleName);
                         export.Super = new ResolvedRef
                         {
                             ClassName = "Class",
@@ -365,9 +385,7 @@ public class AssetRegistry
                     var resolved = scriptObjectIndex.ResolveImportWithModule(raw);
                     if (resolved.HasValue)
                     {
-                        var modulePath = resolved.Value.ModuleName != null
-                            ? $"/Script/{resolved.Value.ModuleName}"
-                            : "/Script";
+                        var modulePath = GetScriptModulePath(resolved.Value.ModuleName);
                         export.Template = new ResolvedRef
                         {
                             ClassName = resolved.Value.ObjectName, // For templates, the class is the object itself
@@ -386,8 +404,13 @@ public class AssetRegistry
     /// </summary>
     private void ResolveLocalClassNames()
     {
-        foreach (var (path, metadata) in _metadataCache)
+        foreach (var asset in GetAssetGroups())
         {
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
+            var path = asset.Asset.Path;
             // Get package path without extension
             var packagePath = GetPackagePath(path);
 
@@ -465,9 +488,13 @@ public class AssetRegistry
     {
         _publicExportHashIndex = new Dictionary<ulong, ExportHashInfo>();
 
-        foreach (var (path, metadata) in _metadataCache)
+        foreach (var asset in GetAssetGroups())
         {
-            var packagePath = GetPackagePath(path);
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
+            var packagePath = GetPackagePath(asset.Asset.Path);
 
             for (int i = 0; i < metadata.Exports.Length; i++)
             {
@@ -492,8 +519,12 @@ public class AssetRegistry
         if (_publicExportHashIndex == null)
             return;
 
-        foreach (var (_, metadata) in _metadataCache)
+        foreach (var asset in GetAssetGroups())
         {
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
             // Skip packages without ImportedPublicExportHashes
             if (metadata.ImportedPublicExportHashes == null)
                 continue;
@@ -572,8 +603,12 @@ public class AssetRegistry
         if (_publicExportHashIndex == null)
             return;
 
-        foreach (var (_, metadata) in _metadataCache)
+        foreach (var asset in GetAssetGroups())
         {
+            var metadata = asset.Metadata;
+            if (metadata == null)
+                continue;
+
             // Skip packages without imports or hashes
             if (metadata.Imports == null || metadata.ImportedPublicExportHashes == null)
                 continue;
@@ -646,62 +681,6 @@ public class AssetRegistry
     public int ExportIndexCount => _exportIndex?.Count ?? 0;
 
     /// <summary>
-    /// Resolves an export name by its PublicExportHash.
-    /// </summary>
-    /// <param name="hash">The public export hash.</param>
-    /// <returns>The export name, or null if not found.</returns>
-    public string? ResolveExportNameByHash(ulong hash)
-    {
-        if (_publicExportHashIndex == null || hash == 0)
-            return null;
-
-        return _publicExportHashIndex.TryGetValue(hash, out var info) ? info.Name : null;
-    }
-
-    /// <summary>
-    /// Resolves full export info by its PublicExportHash.
-    /// </summary>
-    /// <param name="hash">The public export hash.</param>
-    /// <returns>The export info, or null if not found.</returns>
-    public ExportHashInfo? ResolveExportByHash(ulong hash)
-    {
-        if (_publicExportHashIndex == null || hash == 0)
-            return null;
-
-        return _publicExportHashIndex.TryGetValue(hash, out var info) ? info : null;
-    }
-
-    /// <summary>
-    /// Reads export binary data using a pooled buffer.
-    /// Only reads from the .uasset entry - use the AssetGroup overload for .uexp support.
-    /// Caller must dispose the result to return buffer to pool.
-    /// </summary>
-    /// <param name="entry">The container entry containing the asset.</param>
-    /// <param name="export">The export to read data for.</param>
-    /// <returns>Export data. Dispose when done to return buffer to pool.</returns>
-    public ExportData ReadExportData(IAssetEntry entry, AssetExport export)
-    {
-        if (_exportDataReader == null)
-            throw new InvalidOperationException("No export data reader configured");
-
-        if (export.SerialSize <= 0 || export.SerialSize > int.MaxValue)
-            throw new ArgumentException($"Invalid SerialSize: {export.SerialSize}", nameof(export));
-
-        var buffer = ArrayPool<byte>.Shared.Rent((int)export.SerialSize);
-        try
-        {
-            using var stream = OpenRead(entry);
-            _exportDataReader.ReadExportData(export, stream, buffer);
-            return new ExportData(buffer, (int)export.SerialSize);
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-            throw;
-        }
-    }
-
-    /// <summary>
     /// Reads export binary data using a pooled buffer.
     /// Automatically handles data split across .uasset and .uexp files.
     /// Caller must dispose the result to return buffer to pool.
@@ -760,5 +739,27 @@ public class AssetRegistry
             ArrayPool<byte>.Shared.Return(buffer);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Reads export binary data using metadata to find the asset.
+    /// </summary>
+    /// <param name="metadata">The asset metadata.</param>
+    /// <param name="export">The export to read.</param>
+    /// <returns>Export data, or null if asset not found.</returns>
+    public ExportData? ReadExportData(AssetMetadata metadata, AssetExport export)
+    {
+        // Get the base path from metadata name (remove extension if present)
+        var basePath = metadata.Name;
+        var lastDot = basePath.LastIndexOf('.');
+        if (lastDot > 0)
+            basePath = basePath[..lastDot];
+
+        // Find the asset group
+        var asset = GetAssetGroupByPath(basePath);
+        if (asset == null)
+            return null;
+
+        return ReadExportData(asset, export, metadata);
     }
 }

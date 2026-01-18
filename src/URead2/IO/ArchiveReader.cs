@@ -32,6 +32,8 @@ public class ArchiveReader : IDisposable
 
     public long Length => _stream.Length;
 
+    public long Remaining => _stream.Length - _stream.Position;
+
     public byte ReadByte()
     {
         int b = _stream.ReadByte();
@@ -107,10 +109,27 @@ public class ArchiveReader : IDisposable
     /// </summary>
     public string ReadFString()
     {
+        if (!TryReadFString(out var result))
+            throw new InvalidDataException("Failed to read FString");
+        return result;
+    }
+
+    /// <summary>
+    /// Tries to read an Unreal Engine FString without throwing exceptions.
+    /// Returns false if the string cannot be read (invalid length, not enough data, etc.).
+    /// </summary>
+    public bool TryReadFString(out string result)
+    {
+        result = string.Empty;
+
+        // Need at least 4 bytes for length
+        if (Remaining < 4)
+            return false;
+
         int length = ReadInt32();
 
         if (length == 0)
-            return string.Empty;
+            return true; // Empty string is valid
 
         if (length < 0)
         {
@@ -118,8 +137,12 @@ public class ArchiveReader : IDisposable
             int charCount = -length;
             int byteCount = charCount * 2;
 
-            if (byteCount > 1024 * 1024)
-                throw new InvalidDataException($"FString length too large: {charCount}");
+            if (byteCount > 1024 * 1024 || byteCount > Remaining)
+            {
+                // Seek back since we read the length but can't read the string
+                _stream.Seek(-4, SeekOrigin.Current);
+                return false;
+            }
 
             var bytes = byteCount <= _buffer.Length
                 ? _buffer.AsSpan(0, byteCount)
@@ -138,13 +161,18 @@ public class ArchiveReader : IDisposable
                 }
             }
 
-            return Encoding.Unicode.GetString(bytes[..actualBytes]);
+            result = Encoding.Unicode.GetString(bytes[..actualBytes]);
+            return true;
         }
         else
         {
             // ASCII/UTF-8 string
-            if (length > 1024 * 1024)
-                throw new InvalidDataException($"FString length too large: {length}");
+            if (length > 1024 * 1024 || length > Remaining)
+            {
+                // Seek back since we read the length but can't read the string
+                _stream.Seek(-4, SeekOrigin.Current);
+                return false;
+            }
 
             var bytes = length <= _buffer.Length
                 ? _buffer.AsSpan(0, length)
@@ -157,7 +185,8 @@ public class ArchiveReader : IDisposable
             if (actualLength < 0)
                 actualLength = length;
 
-            return Encoding.UTF8.GetString(bytes[..actualLength]);
+            result = Encoding.UTF8.GetString(bytes[..actualLength]);
+            return true;
         }
     }
 

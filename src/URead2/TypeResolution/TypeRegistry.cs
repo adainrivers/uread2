@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using URead2.Compression;
-using URead2.Deserialization.Abstractions;
 
 namespace URead2.TypeResolution;
 
@@ -14,10 +13,6 @@ public sealed class TypeRegistry
     private readonly ConcurrentDictionary<string, TypeDefinition> _types = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, EnumDefinition> _enums = new(StringComparer.OrdinalIgnoreCase);
 
-    // Lookup indexes
-    private readonly ConcurrentDictionary<ulong, TypeDefinition> _typesByHash = new();
-    private readonly ConcurrentDictionary<string, TypeDefinition> _typesByPackagePath = new(StringComparer.OrdinalIgnoreCase);
-
     // Caches
     private readonly ConcurrentDictionary<string, PropertyDefinition?[]> _flattenedPropertiesCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _failedResolutions = new(StringComparer.OrdinalIgnoreCase);
@@ -25,9 +20,9 @@ public sealed class TypeRegistry
     /// <summary>
     /// Callback for lazy type resolution when type is not found locally.
     /// Used to resolve Blueprint types on-demand from asset exports.
-    /// Returns (superTypeName, packagePath) or null if not resolvable.
+    /// Returns (superTypeName, packagePath, properties) or null if not resolvable.
     /// </summary>
-    public Func<string, (string? SuperName, string? PackagePath)?>? LazyResolver { get; set; }
+    public Func<string, (string? SuperName, string? PackagePath, Dictionary<int, PropertyDefinition>? Properties)?>? LazyResolver { get; set; }
 
     /// <summary>
     /// Gets an empty registry with no types.
@@ -57,12 +52,25 @@ public sealed class TypeRegistry
     }
 
     /// <summary>
-    /// Loads additional types from a .usmap file into this registry.
+    /// Creates a TypeRegistry and loads types from a JSON file (SDK generator format).
     /// </summary>
-    public void LoadUsmap(string path, Decompressor? decompressor = null)
+    public static TypeRegistry FromJson(string path)
     {
-        var loader = new UsmapLoader(decompressor);
-        loader.Load(path, this);
+        var registry = new TypeRegistry();
+        var loader = new TypeRegistryJsonLoader();
+        loader.Load(path, registry);
+        return registry;
+    }
+
+    /// <summary>
+    /// Creates a TypeRegistry and loads types from a JSON stream (SDK generator format).
+    /// </summary>
+    public static TypeRegistry FromJson(Stream stream)
+    {
+        var registry = new TypeRegistry();
+        var loader = new TypeRegistryJsonLoader();
+        loader.Load(stream, registry);
+        return registry;
     }
 
     #region Type Operations
@@ -79,27 +87,12 @@ public sealed class TypeRegistry
     }
 
     /// <summary>
-    /// Gets a type by hash.
+    /// Tries to get a type by name without triggering lazy resolution.
+    /// Use this when you need to check types during lazy resolution to avoid infinite recursion.
     /// </summary>
-    public TypeDefinition? GetTypeByHash(ulong hash)
+    public TypeDefinition? TryGetType(string typeName)
     {
-        return _typesByHash.GetValueOrDefault(hash);
-    }
-
-    /// <summary>
-    /// Gets a type by package path.
-    /// </summary>
-    public TypeDefinition? GetTypeByPackagePath(string packagePath)
-    {
-        return _typesByPackagePath.GetValueOrDefault(packagePath);
-    }
-
-    /// <summary>
-    /// Checks if a type exists.
-    /// </summary>
-    public bool HasType(string typeName)
-    {
-        return _types.ContainsKey(typeName);
+        return _types.GetValueOrDefault(typeName);
     }
 
     /// <summary>
@@ -115,70 +108,8 @@ public sealed class TypeRegistry
             type.Super = GetType(type.SuperName);
         }
 
-        // Index by package path
-        if (!string.IsNullOrEmpty(type.PackagePath))
-        {
-            _typesByPackagePath[type.PackagePath] = type;
-        }
-
         // Invalidate flattened properties cache
         _flattenedPropertiesCache.TryRemove(type.Name, out _);
-    }
-
-    /// <summary>
-    /// Registers a type with a hash for lookup.
-    /// </summary>
-    public void RegisterWithHash(TypeDefinition type, ulong hash)
-    {
-        Register(type);
-        _typesByHash[hash] = type;
-    }
-
-    /// <summary>
-    /// Marks a type to be skipped during deserialization.
-    /// </summary>
-    public void SetSkip(string typeName, bool skip = true)
-    {
-        if (_types.TryGetValue(typeName, out var type))
-        {
-            type.ShouldSkip = skip;
-        }
-    }
-
-    /// <summary>
-    /// Marks multiple types to be skipped during deserialization.
-    /// </summary>
-    public void SetSkip(IEnumerable<string> typeNames, bool skip = true)
-    {
-        foreach (var name in typeNames)
-            SetSkip(name, skip);
-    }
-
-    /// <summary>
-    /// Sets a custom deserializer for a type.
-    /// </summary>
-    public void SetDeserializer(string typeName, ITypeReader deserializer)
-    {
-        if (_types.TryGetValue(typeName, out var type))
-        {
-            type.Deserializer = deserializer;
-        }
-    }
-
-    /// <summary>
-    /// Gets the deserializer for a type (custom or null for default).
-    /// </summary>
-    public ITypeReader? GetDeserializer(string typeName)
-    {
-        return _types.TryGetValue(typeName, out var type) ? type.Deserializer : null;
-    }
-
-    /// <summary>
-    /// Checks if a type should be skipped.
-    /// </summary>
-    public bool ShouldSkip(string typeName)
-    {
-        return _types.TryGetValue(typeName, out var type) && type.ShouldSkip;
     }
 
     #endregion
@@ -194,27 +125,11 @@ public sealed class TypeRegistry
     }
 
     /// <summary>
-    /// Checks if an enum exists.
-    /// </summary>
-    public bool HasEnum(string enumName)
-    {
-        return _enums.ContainsKey(enumName);
-    }
-
-    /// <summary>
     /// Registers an enum definition.
     /// </summary>
     public void Register(EnumDefinition enumDef)
     {
         _enums[enumDef.Name] = enumDef;
-    }
-
-    /// <summary>
-    /// Gets the name for an enum value.
-    /// </summary>
-    public string? GetEnumValueName(string enumName, long value)
-    {
-        return GetEnum(enumName)?.GetName(value);
     }
 
     #endregion
@@ -268,17 +183,6 @@ public sealed class TypeRegistry
         return properties;
     }
 
-    /// <summary>
-    /// Gets a property by type and index from flattened properties.
-    /// </summary>
-    public PropertyDefinition? GetProperty(string typeName, int index)
-    {
-        var props = GetFlattenedProperties(typeName);
-        if (props == null || index < 0 || index >= props.Length)
-            return null;
-        return props[index];
-    }
-
     #endregion
 
     #region Lazy Resolution
@@ -298,19 +202,22 @@ public sealed class TypeRegistry
             return null;
         }
 
-        var (superName, packagePath) = result.Value;
+        var (superName, packagePath, properties) = result.Value;
+
+        // Use provided properties or empty dictionary
+        var propsDict = properties ?? new Dictionary<int, PropertyDefinition>();
 
         // Get parent's property count for inheritance
-        int propertyCount = 0;
+        int propertyCount = propsDict.Count;
         if (!string.IsNullOrEmpty(superName))
         {
             var parent = GetType(superName);
             if (parent != null)
-                propertyCount = parent.PropertyCount;
+                propertyCount += parent.PropertyCount;
         }
 
-        // Create minimal type definition
-        var type = new TypeDefinition(typeName, TypeSource.Asset, new Dictionary<int, PropertyDefinition>())
+        // Create type definition with resolved properties
+        var type = new TypeDefinition(typeName, TypeSource.Asset, propsDict)
         {
             SuperName = superName,
             PackagePath = packagePath,
@@ -321,45 +228,9 @@ public sealed class TypeRegistry
         return type;
     }
 
-    /// <summary>
-    /// Clears failed resolution cache to allow retrying.
-    /// </summary>
-    public void ClearFailedResolutions()
-    {
-        _failedResolutions.Clear();
-    }
-
     #endregion
 
-    #region Statistics
-
-    /// <summary>
-    /// Gets the total number of registered types.
-    /// </summary>
-    public int TypeCount => _types.Count;
-
-    /// <summary>
-    /// Gets the total number of registered enums.
-    /// </summary>
-    public int EnumCount => _enums.Count;
-
-    /// <summary>
-    /// Gets the number of types from a specific source.
-    /// </summary>
-    public int GetTypeCount(TypeSource source)
-    {
-        return _types.Values.Count(t => t.Source == source);
-    }
-
-    /// <summary>
-    /// Gets all type names.
-    /// </summary>
-    public IEnumerable<string> TypeNames => _types.Keys;
-
-    /// <summary>
-    /// Gets all enum names.
-    /// </summary>
-    public IEnumerable<string> EnumNames => _enums.Keys;
+    #region Enumeration
 
     /// <summary>
     /// Gets all types.
@@ -370,45 +241,6 @@ public sealed class TypeRegistry
     /// Gets all enums.
     /// </summary>
     public IEnumerable<EnumDefinition> Enums => _enums.Values;
-
-    #endregion
-
-    #region Clear
-
-    /// <summary>
-    /// Clears all types from a specific source.
-    /// </summary>
-    public void ClearSource(TypeSource source)
-    {
-        var toRemove = _types.Where(kvp => kvp.Value.Source == source).Select(kvp => kvp.Key).ToList();
-        foreach (var name in toRemove)
-        {
-            if (_types.TryRemove(name, out var type))
-            {
-                if (!string.IsNullOrEmpty(type.PackagePath))
-                    _typesByPackagePath.TryRemove(type.PackagePath, out _);
-            }
-        }
-
-        var enumsToRemove = _enums.Where(kvp => kvp.Value.Source == source).Select(kvp => kvp.Key).ToList();
-        foreach (var name in enumsToRemove)
-            _enums.TryRemove(name, out _);
-
-        _flattenedPropertiesCache.Clear();
-    }
-
-    /// <summary>
-    /// Clears all types and enums.
-    /// </summary>
-    public void Clear()
-    {
-        _types.Clear();
-        _enums.Clear();
-        _typesByHash.Clear();
-        _typesByPackagePath.Clear();
-        _flattenedPropertiesCache.Clear();
-        _failedResolutions.Clear();
-    }
 
     #endregion
 }

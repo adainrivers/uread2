@@ -4,21 +4,34 @@ namespace URead2.Assets.Models;
 
 /// <summary>
 /// Wraps export data in a pooled buffer. Dispose to return buffer to pool.
+/// This is a class (not struct) to prevent pool corruption from value copies.
 /// </summary>
-public readonly struct ExportData : IDisposable
+public sealed class ExportData : IDisposable
 {
-    private readonly byte[]? _buffer;
+    private byte[]? _buffer;
     private readonly int _length;
+    private bool _disposed;
 
     /// <summary>
     /// The export binary data.
     /// </summary>
-    public ReadOnlySpan<byte> Data => _buffer.AsSpan(0, _length);
+    public ReadOnlySpan<byte> Data
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _buffer.AsSpan(0, _length);
+        }
+    }
 
     /// <summary>
     /// Creates a MemoryStream over the buffer without copying.
     /// </summary>
-    public MemoryStream AsStream() => new(_buffer ?? [], 0, _length, writable: false);
+    public MemoryStream AsStream()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return new MemoryStream(_buffer ?? [], 0, _length, writable: false);
+    }
 
     /// <summary>
     /// Length of the export data in bytes.
@@ -41,7 +54,11 @@ public readonly struct ExportData : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (_buffer != null)
+        if (!_disposed && _buffer != null)
+        {
             ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = null;
+            _disposed = true;
+        }
     }
 }

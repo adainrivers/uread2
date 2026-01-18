@@ -7,5 +7,6 @@ public record RuntimeConfig
 {
     public required string PaksPath { get; init; }
     public string? UsmapPath { get; init; }
+    public string? TypeRegistryJsonPath { get; init; }
     public byte[]? AesKey { get; init; }
 }

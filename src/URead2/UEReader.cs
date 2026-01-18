@@ -4,7 +4,9 @@ using URead2.Assets.Models;
 using URead2.Containers;
 using URead2.Deserialization;
 using URead2.Deserialization.Abstractions;
+using URead2.Deserialization.Fields;
 using URead2.Deserialization.Properties;
+using URead2.Deserialization.TypeReaders;
 using URead2.IO;
 using URead2.Profiles.Abstractions;
 using URead2.TypeResolution;
@@ -39,17 +41,30 @@ public class UEReader : IDisposable
 
     /// <summary>
     /// Configures type resolution from runtime config.
-    /// Loads usmap and global data if available.
+    /// Loads type registry from JSON or usmap if available.
     /// </summary>
     private void ConfigureTypeResolution(RuntimeConfig config)
     {
-        // Load usmap type mappings if configured
-        if (!string.IsNullOrEmpty(config.UsmapPath) && File.Exists(config.UsmapPath))
+        // Prefer JSON type registry if configured (has package paths)
+        if (!string.IsNullOrEmpty(config.TypeRegistryJsonPath) && File.Exists(config.TypeRegistryJsonPath))
+        {
+            try
+            {
+                _typeRegistry = TypeRegistry.FromJson(config.TypeRegistryJsonPath);
+                _typeRegistry.LazyResolver = ResolveTypeFromExportIndex;
+                Serilog.Log.Information("Loaded type registry from JSON: {Path}", config.TypeRegistryJsonPath);
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Warning(ex, "Failed to load type registry JSON from: {Path}", config.TypeRegistryJsonPath);
+            }
+        }
+        // Fall back to usmap if JSON not configured
+        else if (!string.IsNullOrEmpty(config.UsmapPath) && File.Exists(config.UsmapPath))
         {
             try
             {
                 _typeRegistry = TypeRegistry.FromUsmap(config.UsmapPath, _profile.Decompressor);
-                // Set up lazy type resolution for Blueprint classes
                 _typeRegistry.LazyResolver = ResolveTypeFromExportIndex;
             }
             catch (Exception ex)
@@ -73,35 +88,52 @@ public class UEReader : IDisposable
     /// <summary>
     /// Resolves type info from the export index for Blueprint/asset-defined types.
     /// </summary>
-    private (string? SuperName, string? PackagePath)? ResolveTypeFromExportIndex(string typeName)
+    private (string? SuperName, string? PackagePath, Dictionary<int, PropertyDefinition>? Properties)? ResolveTypeFromExportIndex(string typeName)
     {
         // Export index must be built (via PreloadAllMetadata)
         if (Assets.ExportIndexCount == 0)
+        {
+            Serilog.Log.Debug("LazyResolver: Export index is empty for {TypeName}", typeName);
             return null;
+        }
 
-        // Find the export that defines this type
-        var export = FindTypeDefiningExport(typeName);
-        if (export == null)
+        // Find the export that defines this type (with metadata)
+        var result = FindTypeDefiningExportWithMetadata(typeName);
+        if (result == null)
+        {
+            // Debug: check if export exists at all by name
+            var exports = Assets.FindExportsByName(typeName).ToList();
+            if (exports.Count > 0)
+            {
+                Serilog.Log.Debug("LazyResolver: Found {Count} exports named {TypeName} but none are type-defining. ClassNames: {ClassNames}",
+                    exports.Count, typeName, string.Join(", ", exports.Select(e => e.Export.ClassName).Distinct()));
+            }
             return null;
+        }
+
+        var (metadata, export) = result.Value;
 
         // Check if it's a type-defining class by checking inheritance chain
         if (!IsTypeDefiningClass(export.ClassName))
             return null;
 
-        return (export.SuperClassName, null);
+        // Try to read and parse the properties from the export
+        var properties = TryReadBlueprintProperties(metadata, export);
+
+        return (export.SuperClassName, null, properties);
     }
 
     /// <summary>
-    /// Finds an export that defines the given type name.
+    /// Finds an export that defines the given type name, with its metadata.
     /// </summary>
-    private Assets.Models.AssetExport? FindTypeDefiningExport(string typeName)
+    private (AssetMetadata Metadata, AssetExport Export)? FindTypeDefiningExportWithMetadata(string typeName)
     {
         // Use O(1) name-based index lookup
-        foreach (var (_, export) in Assets.FindExportsByName(typeName))
+        foreach (var (metadata, export) in Assets.FindExportsByName(typeName))
         {
             if (IsTypeDefiningClass(export.ClassName))
             {
-                return export;
+                return (metadata, export);
             }
         }
 
@@ -109,12 +141,52 @@ public class UEReader : IDisposable
     }
 
     /// <summary>
+    /// Tries to read and parse Blueprint class properties from an export.
+    /// </summary>
+    private Dictionary<int, PropertyDefinition>? TryReadBlueprintProperties(AssetMetadata metadata, AssetExport export)
+    {
+        try
+        {
+            var exportData = Assets.ReadExportData(metadata, export);
+            if (exportData == null)
+                return null;
+
+            using var _ = exportData;
+            using var stream = exportData.AsStream();
+            using var ar = new ArchiveReader(stream);
+
+            // Skip tagged properties first (UObject properties)
+            // These are the standard properties like NumReplicatedProperties, etc.
+            _profile.PropertyReader.ReadProperties(ar, CreateReadContext(metadata), export.ClassName, metadata.IsUnversioned);
+
+            // Now read the FProperty array (ChildProperties)
+            var fProperties = BlueprintClassReader.ReadClassProperties(ar, metadata, export);
+            if (fProperties == null || fProperties.Length == 0)
+                return null;
+
+            // Convert to PropertyDefinition dictionary
+            return BlueprintClassReader.ConvertToPropertyDefinitions(fProperties);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Debug(ex, "Failed to read Blueprint properties for {TypeName}", export.Name);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Checks if a class name represents a type-defining class.
+    /// Uses TryGetType to avoid triggering lazy resolution (prevents infinite recursion).
     /// </summary>
     private bool IsTypeDefiningClass(string className)
     {
+        // First check the name directly for known type-defining classes
+        if (IsKnownTypeDefiningClass(className))
+            return true;
+
         // Check if the class itself or its base is a type-defining class
-        var typeDef = TypeRegistry.GetType(className);
+        // Use TryGetType to avoid triggering lazy resolution (prevents infinite recursion)
+        var typeDef = TypeRegistry.TryGetType(className);
         if (typeDef == null)
             return false;
 
@@ -122,23 +194,24 @@ public class UEReader : IDisposable
         var current = typeDef;
         while (current != null)
         {
-            var name = current.Name;
-            if (name.Equals("BlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("WidgetBlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("AnimBlueprintGeneratedClass", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("ScriptStruct", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("UserDefinedStruct", StringComparison.OrdinalIgnoreCase))
-            {
+            if (IsKnownTypeDefiningClass(current.Name))
                 return true;
-            }
 
             if (string.IsNullOrEmpty(current.SuperName))
                 break;
 
-            current = TypeRegistry.GetType(current.SuperName);
+            current = TypeRegistry.TryGetType(current.SuperName);
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Checks if a class name is one of the known type-defining classes.
+    /// </summary>
+    private static bool IsKnownTypeDefiningClass(string className)
+    {
+        return AssetConstants.TypeDefiningClasses.Contains(className);
     }
 
     /// <summary>
@@ -172,34 +245,10 @@ public class UEReader : IDisposable
     public IReadOnlyList<AssetGroup> GetAssets()
         => Assets.GetAssetGroups();
 
-
-    /// <summary>
-    /// Gets all assets grouped with their companion files.
-    /// Uses cached results. Filter applies to AssetGroup.BasePath.
-    /// </summary>
-    public IEnumerable<AssetGroup> GetAssets(Func<string, bool> pathFilter)
-        => Assets.GetAssetGroups().Where(g => pathFilter(g.BasePath));
-
     /// <summary>
     /// Opens a stream to read entry content.
     /// </summary>
     public Stream OpenRead(IAssetEntry entry) => Assets.OpenRead(entry);
-
-    /// <summary>
-    /// Reads asset metadata.
-    /// </summary>
-    public AssetMetadata? ReadMetadata(IAssetEntry entry) => Assets.ReadMetadata(entry);
-
-    /// <summary>
-    /// Reads asset metadata.
-    /// </summary>
-    public AssetMetadata? ReadMetadata(AssetGroup asset) => Assets.ReadMetadata(asset);
-
-    /// <summary>
-    /// Reads export binary data.
-    /// </summary>
-    public ExportData ReadExportData(IAssetEntry entry, AssetExport export)
-        => Assets.ReadExportData(entry, export);
 
     /// <summary>
     /// Reads export binary data.
@@ -213,8 +262,7 @@ public class UEReader : IDisposable
     /// </summary>
     public AssetExport[] GetExports(AssetGroup asset)
     {
-        var metadata = Assets.ReadMetadata(asset);
-        return metadata?.Exports ?? [];
+        return asset.Metadata?.Exports ?? [];
     }
 
     /// <summary>
@@ -225,7 +273,7 @@ public class UEReader : IDisposable
     /// <returns>Deserialized properties, or empty bag if deserialization fails.</returns>
     public PropertyBag DeserializeExport(AssetGroup asset, AssetExport export)
     {
-        var metadata = Assets.ReadMetadata(asset);
+        var metadata = asset.Metadata;
         if (metadata is null)
             return new PropertyBag();
 
@@ -240,6 +288,17 @@ public class UEReader : IDisposable
         if (customReader != null)
         {
             return customReader.Read(ar, context, export);
+        }
+
+        // UE serializes ObjectGuid for non-CDO objects before properties
+        // Read and skip the ObjectGuid boolean (and GUID if present)
+        if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
+        {
+            var hasGuid = ar.ReadInt32() != 0;
+            if (hasGuid && ar.Position + 16 <= ar.Length)
+            {
+                ar.Position += 16; // Skip the 16-byte FGuid
+            }
         }
 
         return _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
@@ -284,22 +343,7 @@ public class UEReader : IDisposable
         {
             NameTable = metadata.NameTable,
             TypeRegistry = TypeRegistry,
-            Imports = metadata.Imports,
-            Exports = metadata.Exports,
-            PackagePath = GetPackagePath(metadata.Name),
-            IsUnversioned = metadata.IsUnversioned
-        };
-    }
-
-    /// <summary>
-    /// Creates a PropertyReadContext for deserializing an asset with a custom type registry.
-    /// </summary>
-    public PropertyReadContext CreateReadContext(AssetMetadata metadata, TypeRegistry typeRegistry)
-    {
-        return new PropertyReadContext
-        {
-            NameTable = metadata.NameTable,
-            TypeRegistry = typeRegistry,
+            PropertyReader = _profile.PropertyReader,
             Imports = metadata.Imports,
             Exports = metadata.Exports,
             PackagePath = GetPackagePath(metadata.Name),

@@ -15,17 +15,17 @@ namespace URead2.Deserialization.TypeReaders;
 /// </summary>
 public class DataTableTypeReader : ITypeReader
 {
-    private readonly IPropertyReader _propertyReader;
+    /// <summary>
+    /// Singleton instance.
+    /// </summary>
+    public static DataTableTypeReader Instance { get; } = new();
 
-    public DataTableTypeReader(IPropertyReader propertyReader)
-    {
-        _propertyReader = propertyReader;
-    }
+    private DataTableTypeReader() { }
 
     public PropertyBag Read(ArchiveReader ar, PropertyReadContext context, AssetExport export)
     {
         // 1. Read base UObject properties
-        var bag = _propertyReader.ReadProperties(ar, context, export.ClassName, context.IsUnversioned);
+        var bag = context.PropertyReader.ReadProperties(ar, context, export.ClassName, context.IsUnversioned);
 
         // 2. Get RowStruct type name from properties
         var rowStructName = ResolveRowStructName(bag);
@@ -49,11 +49,19 @@ public class DataTableTypeReader : ITypeReader
         var rows = new Dictionary<string, PropertyBag>(numRows, StringComparer.Ordinal);
         if (canReadRows)
         {
-            for (int i = 0; i < numRows; i++)
+            try
             {
-                var rowName = ReadFName(ar, context.NameTable);
-                var rowData = ReadRowStruct(ar, context, rowStructName);
-                rows[rowName] = rowData;
+                for (int i = 0; i < numRows; i++)
+                {
+                    var rowName = ReadFName(ar, context.NameTable);
+                    var rowData = ReadRowStruct(ar, context, rowStructName);
+                    rows[rowName] = rowData;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Row struct schema is incomplete or wrong - stop reading but don't fail
+                Serilog.Log.Debug(ex, "Failed to read DataTable rows for struct {StructName}", rowStructName);
             }
         }
 
@@ -82,12 +90,12 @@ public class DataTableTypeReader : ITypeReader
     /// <summary>
     /// Reads a row struct using the property reader.
     /// </summary>
-    private PropertyBag ReadRowStruct(ArchiveReader ar, PropertyReadContext context, string? structName)
+    private static PropertyBag ReadRowStruct(ArchiveReader ar, PropertyReadContext context, string? structName)
     {
         if (string.IsNullOrEmpty(structName))
             return new PropertyBag();
 
-        return _propertyReader.ReadProperties(ar, context, structName, context.IsUnversioned);
+        return context.PropertyReader.ReadProperties(ar, context, structName, context.IsUnversioned);
     }
 
     /// <summary>

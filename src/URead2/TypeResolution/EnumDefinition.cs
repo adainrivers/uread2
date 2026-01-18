@@ -1,7 +1,7 @@
 namespace URead2.TypeResolution;
 
 /// <summary>
-/// Definition of an enum type.
+/// Definition of an enum type (DTO - no business logic).
 /// </summary>
 public sealed class EnumDefinition
 {
@@ -16,6 +16,11 @@ public sealed class EnumDefinition
     public TypeSource Source { get; }
 
     /// <summary>
+    /// Underlying numeric type (e.g., "UInt8", "Int32").
+    /// </summary>
+    public string? UnderlyingType { get; }
+
+    /// <summary>
     /// Enum values: numeric value -> name.
     /// </summary>
     public IReadOnlyDictionary<long, string> Values { get; }
@@ -23,35 +28,21 @@ public sealed class EnumDefinition
     /// <summary>
     /// Reverse lookup: name -> numeric value.
     /// </summary>
-    private readonly Dictionary<string, long> _valuesByName;
+    public IReadOnlyDictionary<string, long> ValuesByName { get; }
 
-    public EnumDefinition(string name, TypeSource source, Dictionary<long, string> values)
+    public EnumDefinition(string name, TypeSource source, Dictionary<long, string> values, string? underlyingType = null)
     {
         Name = name;
         Source = source;
         Values = values;
+        UnderlyingType = underlyingType;
 
-        _valuesByName = new Dictionary<string, long>(values.Count, StringComparer.OrdinalIgnoreCase);
+        var valuesByName = new Dictionary<string, long>(values.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (value, valueName) in values)
         {
-            _valuesByName.TryAdd(valueName, value);
+            valuesByName.TryAdd(valueName, value);
         }
-    }
-
-    /// <summary>
-    /// Gets the name for a numeric value.
-    /// </summary>
-    public string? GetName(long value)
-    {
-        return Values.GetValueOrDefault(value);
-    }
-
-    /// <summary>
-    /// Gets the numeric value for a name.
-    /// </summary>
-    public long? GetValue(string name)
-    {
-        return _valuesByName.TryGetValue(name, out var value) ? value : null;
+        ValuesByName = valuesByName;
     }
 
     public override string ToString() => $"{Name} ({Values.Count} values)";

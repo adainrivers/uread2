@@ -188,11 +188,20 @@ public sealed class AssetStream : Stream
 
             if (blockCompressionMethod != CompressionMethod.None)
             {
-                // Rent buffer for decompressed data
-                _currentBlockData = ArrayPool<byte>.Shared.Rent(block.UncompressedSize);
-                _currentBlockDataLength = block.UncompressedSize;
-                _currentBlockDataPooled = true;
-                _decompressor.Decompress(compressedData, _currentBlockData.AsSpan(0, block.UncompressedSize), blockCompressionMethod);
+                // Rent buffer for decompressed data - only assign to _currentBlockData after successful decompression
+                byte[] decompressBuffer = ArrayPool<byte>.Shared.Rent(block.UncompressedSize);
+                try
+                {
+                    _decompressor.Decompress(compressedData, decompressBuffer.AsSpan(0, block.UncompressedSize), blockCompressionMethod);
+                    _currentBlockData = decompressBuffer;
+                    _currentBlockDataLength = block.UncompressedSize;
+                    _currentBlockDataPooled = true;
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(decompressBuffer);
+                    throw;
+                }
             }
             else
             {

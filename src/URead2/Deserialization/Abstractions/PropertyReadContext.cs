@@ -21,6 +21,11 @@ public class PropertyReadContext
     public required TypeRegistry TypeRegistry { get; init; }
 
     /// <summary>
+    /// Property reader for deserializing nested structures.
+    /// </summary>
+    public required IPropertyReader PropertyReader { get; init; }
+
+    /// <summary>
     /// Import table for resolving object references to external objects.
     /// Imports are pre-resolved during metadata loading.
     /// </summary>

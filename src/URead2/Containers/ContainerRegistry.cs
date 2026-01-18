@@ -25,9 +25,6 @@ public class ContainerRegistry : IDisposable
     // All entries cached
     private List<IAssetEntry>? _allEntries;
 
-    // Entries indexed by path for fast lookup
-    private Dictionary<string, IAssetEntry>? _entriesByPath;
-
     // Script object index for IO Store (loaded from global.utoc)
     private ScriptObjectIndex? _scriptObjectIndex;
 
@@ -77,7 +74,6 @@ public class ContainerRegistry : IDisposable
                 return;
 
             var allEntries = new List<IAssetEntry>();
-            var entriesByPath = new Dictionary<string, IAssetEntry>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var file in Directory.EnumerateFiles(_config.PaksPath, "*", SearchOption.AllDirectories))
             {
@@ -91,12 +87,7 @@ public class ContainerRegistry : IDisposable
                             // For pak files, the data path is the pak file itself
                             var mounted = new MountedContainer(file, entries);
                             _mountedContainers[file] = mounted;
-
-                            foreach (var entry in entries)
-                            {
-                                allEntries.Add(entry);
-                                entriesByPath.TryAdd(entry.Path, entry);
-                            }
+                            allEntries.AddRange(entries);
                         }
                     }
                     else if (file.EndsWith(".utoc", StringComparison.OrdinalIgnoreCase) && _profile.IoStoreReader != null)
@@ -110,12 +101,7 @@ public class ContainerRegistry : IDisposable
                             {
                                 var mounted = new MountedContainer(ucasPath, entries);
                                 _mountedContainers[ucasPath] = mounted;
-
-                                foreach (var entry in entries)
-                                {
-                                    allEntries.Add(entry);
-                                    entriesByPath.TryAdd(entry.Path, entry);
-                                }
+                                allEntries.AddRange(entries);
                             }
                         }
                     }
@@ -128,7 +114,6 @@ public class ContainerRegistry : IDisposable
             }
 
             _allEntries = allEntries;
-            _entriesByPath = entriesByPath;
 
             // Load script object index if global.utoc exists
             LoadScriptObjectIndex();
@@ -200,15 +185,6 @@ public class ContainerRegistry : IDisposable
     }
 
     /// <summary>
-    /// Gets a specific entry by its path. O(1) lookup.
-    /// </summary>
-    public IAssetEntry? GetEntry(string path)
-    {
-        EnsureMounted();
-        return _entriesByPath!.TryGetValue(path, out var entry) ? entry : null;
-    }
-
-    /// <summary>
     /// Gets the mounted container for a given data path (.ucas or .pak).
     /// </summary>
     public MountedContainer? GetMountedContainer(string dataPath)
@@ -257,7 +233,6 @@ public class ContainerRegistry : IDisposable
             }
             _mountedContainers.Clear();
             _allEntries = null;
-            _entriesByPath = null;
             _disposed = true;
         }
         GC.SuppressFinalize(this);

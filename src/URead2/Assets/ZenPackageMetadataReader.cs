@@ -269,14 +269,9 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         var names = new string[count];
         for (int i = 0; i < count && archive.Position < archive.Length; i++)
         {
-            try
-            {
-                names[i] = archive.ReadFString();
-            }
-            catch
-            {
+            if (!archive.TryReadFString(out var name))
                 break;
-            }
+            names[i] = name;
         }
 
         return names;

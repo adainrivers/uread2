@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Serilog;
 using URead2.Deserialization.Abstractions;
 using URead2.IO;
@@ -10,7 +11,7 @@ namespace URead2.Deserialization.Properties;
 /// </summary>
 public class PropertyReader : IPropertyReader
 {
-    private static readonly HashSet<string> _loggedMissingSchemas = [];
+    private static readonly ConcurrentDictionary<string, byte> _loggedMissingSchemas = new();
     /// <summary>
     /// Reads all properties from an export's serialized data.
     /// </summary>
@@ -81,7 +82,7 @@ public class PropertyReader : IPropertyReader
         var typeDef = context.TypeRegistry.GetType(className);
         if (typeDef == null)
         {
-            if (_loggedMissingSchemas.Add(className))
+            if (_loggedMissingSchemas.TryAdd(className, 0))
                 Log.Warning("No type definition found for class {ClassName}", className);
             return;
         }
@@ -94,7 +95,7 @@ public class PropertyReader : IPropertyReader
         var allProperties = context.TypeRegistry.GetFlattenedProperties(className);
         if (allProperties == null)
         {
-            if (_loggedMissingSchemas.Add($"props:{className}"))
+            if (_loggedMissingSchemas.TryAdd($"props:{className}", 0))
                 Log.Warning("No flattened properties found for class {ClassName}", className);
             return;
         }
@@ -264,7 +265,7 @@ public class PropertyReader : IPropertyReader
             if (enumDef != null && numericValue is IConvertible conv)
             {
                 var longValue = conv.ToInt64(null);
-                var valueName = enumDef.GetName(longValue);
+                var valueName = EnumResolver.GetName(enumDef, longValue);
                 return new EnumProperty(valueName, propType.EnumName);
             }
         }
@@ -613,6 +614,10 @@ public class PropertyReader : IPropertyReader
         int zeroMaskNum = 0;
         int unmaskedNum = 0;
 
+        // Sanity limit: if we read more than 50 fragments, this is likely
+        // a World Partition delta-serialized export being misinterpreted
+        const int maxFragments = 50;
+
         while (true)
         {
             var packed = ar.ReadUInt16();
@@ -626,6 +631,12 @@ public class PropertyReader : IPropertyReader
 
             if (fragment.IsLast)
                 break;
+
+            // Bail out if we've read too many fragments - indicates corrupt/delta data
+            if (fragments.Count >= maxFragments)
+            {
+                throw new InvalidDataException($"Unversioned header has too many fragments ({fragments.Count}+), likely delta-serialized export");
+            }
         }
 
         bool[] zeroMask = [];
