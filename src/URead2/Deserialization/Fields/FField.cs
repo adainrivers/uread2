@@ -10,17 +10,26 @@ public class FField
     public string Name { get; set; } = string.Empty;
     public uint Flags { get; set; }
 
-    public virtual void Deserialize(ArchiveReader ar, string[] nameTable)
+    public virtual bool Deserialize(ArchiveReader ar, string[] nameTable)
     {
-        Name = ReadFName(ar, nameTable);
-        Flags = ar.ReadUInt32();
+        Name = ReadFName(ar, nameTable, out var success);
+        if (!success)
+            return false;
+
+        if (!ar.TryReadUInt32(out var flags))
+            return false;
+
+        Flags = flags;
+        return true;
     }
 
-    protected static string ReadFName(ArchiveReader ar, string[] nameTable)
+    protected static string ReadFName(ArchiveReader ar, string[] nameTable, out bool success)
     {
-        int index = ar.ReadInt32();
-        int number = ar.ReadInt32();
+        success = false;
+        if (!ar.TryReadInt32(out int index) || !ar.TryReadInt32(out int number))
+            return "None";
 
+        success = true;
         if (index < 0 || index >= nameTable.Length)
             return "None";
 

@@ -161,6 +161,17 @@ public sealed class PropertyBag
     public TypeDefinition? TypeDef { get; set; }
 
     /// <summary>
+    /// Diagnostics collected during deserialization (warnings, recoveries).
+    /// Null if no diagnostics were recorded.
+    /// </summary>
+    public List<ReadDiagnostic>? Diagnostics { get; set; }
+
+    /// <summary>
+    /// True if any diagnostics were recorded during deserialization.
+    /// </summary>
+    public bool HasDiagnostics => Diagnostics is { Count: > 0 };
+
+    /// <summary>
     /// Gets all property names.
     /// </summary>
     public IEnumerable<string> Names => _properties.Keys;

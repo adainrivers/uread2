@@ -1,3 +1,4 @@
+using System.Text;
 using Serilog;
 using URead2.Assets.Abstractions;
 using URead2.Assets.Models;
@@ -54,33 +55,47 @@ public class PakReader : IContainerReader
                 continue;
 
             archive.Seek(-size, SeekOrigin.End);
-            archive.Skip(MagicOffsetFromInfoStart);
+            if (!archive.TrySkip(MagicOffsetFromInfoStart))
+                continue;
 
-            var magic = archive.ReadUInt32();
+            if (!archive.TryReadUInt32(out var magic))
+                continue;
+
             if (magic != Magic)
                 continue;
 
             // Found valid magic, read the rest
             archive.Seek(-size, SeekOrigin.End);
 
-            var encryptionKeyGuid = archive.ReadGuid();
-            var isIndexEncrypted = archive.ReadBool();
-            archive.Skip(4); // magic already read
+            if (!archive.TryReadGuid(out _)) // encryptionKeyGuid
+                continue;
 
-            var version = archive.ReadInt32();
-            var indexOffset = archive.ReadInt64();
-            var indexSize = archive.ReadInt64();
-            var indexHash = archive.ReadBytes(IndexHashSize);
+            if (!archive.TryReadByte(out var isIndexEncryptedByte))
+                continue;
+
+            bool isIndexEncrypted = isIndexEncryptedByte != 0;
+            if (!archive.TrySkip(4)) // magic already validated
+                continue;
+
+            if (!archive.TryReadInt32(out var version) ||
+                !archive.TryReadInt64(out var indexOffset) ||
+                !archive.TryReadInt64(out var indexSize))
+                continue;
+
+            if (!archive.TrySkip(IndexHashSize)) // indexHash
+                continue;
 
             // Read compression methods (5 methods, 32 bytes each)
             var compressionMethods = new List<string>();
             for (int i = 0; i < 5; i++)
             {
-                var nameBytes = archive.ReadBytes(CompressionMethodNameLength);
+                if (!archive.TryReadBytes(CompressionMethodNameLength, out var nameBytes))
+                    break;
+
                 int nullIndex = Array.IndexOf(nameBytes, (byte)0);
                 if (nullIndex < 0) nullIndex = CompressionMethodNameLength;
                 if (nullIndex > 0)
-                    compressionMethods.Add(System.Text.Encoding.ASCII.GetString(nameBytes, 0, nullIndex));
+                    compressionMethods.Add(Encoding.ASCII.GetString(nameBytes, 0, nullIndex));
             }
 
             return new PakInfo(version, indexOffset, indexSize, isIndexEncrypted, compressionMethods.ToArray());
@@ -105,7 +120,9 @@ public class PakReader : IContainerReader
             Log.Verbose("Decrypting pak index");
 
             int alignedSize = Crypto.AesDecryptor.Align16((int)info.IndexSize);
-            var encryptedData = archive.ReadBytes(alignedSize);
+            if (!archive.TryReadBytes(alignedSize, out var encryptedData))
+                yield break;
+
             var decryptedData = Crypto.AesDecryptor.Decrypt(encryptedData, aesKey);
 
             decryptedStream = new MemoryStream(decryptedData, 0, (int)info.IndexSize);
@@ -118,26 +135,49 @@ public class PakReader : IContainerReader
 
         try
         {
-            var mountPoint = indexArchive.ReadFString();
+            if (!indexArchive.TryReadFString(out var mountPoint))
+                yield break;
+
             mountPoint = NormalizeMountPoint(mountPoint);
 
-            var entryCount = indexArchive.ReadInt32();
-            indexArchive.Skip(8); // path hash seed
+            if (!indexArchive.TryReadInt32(out var entryCount))
+                yield break;
 
-            var hasPathHashIndex = indexArchive.ReadInt32() != 0;
+            if (!indexArchive.TrySkip(8)) // path hash seed
+                yield break;
+
+            if (!indexArchive.TryReadInt32(out var hasPathHashIndexRaw))
+                yield break;
+
+            var hasPathHashIndex = hasPathHashIndexRaw != 0;
             if (hasPathHashIndex)
-                indexArchive.Skip(8 + 8 + 20);
+            {
+                if (!indexArchive.TrySkip(8 + 8 + 20))
+                    yield break;
+            }
 
-            var hasFullDirectoryIndex = indexArchive.ReadInt32() != 0;
+            if (!indexArchive.TryReadInt32(out var hasFullDirectoryIndexRaw))
+                yield break;
+
+            var hasFullDirectoryIndex = hasFullDirectoryIndexRaw != 0;
             if (!hasFullDirectoryIndex)
-                throw new InvalidDataException("Pak file does not have full directory index");
+            {
+                Log.Warning("Pak file does not have full directory index");
+                yield break;
+            }
 
-            var directoryIndexOffset = indexArchive.ReadInt64();
-            var directoryIndexSize = indexArchive.ReadInt64();
-            indexArchive.Skip(20); // directory index hash
+            if (!indexArchive.TryReadInt64(out var directoryIndexOffset) ||
+                !indexArchive.TryReadInt64(out var directoryIndexSize))
+                yield break;
 
-            var encodedEntriesSize = indexArchive.ReadInt32();
-            var encodedEntries = indexArchive.ReadBytes(encodedEntriesSize);
+            if (!indexArchive.TrySkip(20)) // directory index hash
+                yield break;
+
+            if (!indexArchive.TryReadInt32(out var encodedEntriesSize))
+                yield break;
+
+            if (!indexArchive.TryReadBytes(encodedEntriesSize, out var encodedEntries))
+                yield break;
 
             Log.Verbose("DirectoryIndexOffset={DirectoryIndexOffset}, IndexOffset={IndexOffset}, IndexSize={IndexSize}, EncodedEntriesSize={EncodedEntriesSize}, CurrentPos={CurrentPos}",
                 directoryIndexOffset, info.IndexOffset, info.IndexSize, encodedEntriesSize, indexArchive.Position);
@@ -146,11 +186,13 @@ public class PakReader : IContainerReader
             // For encrypted paks, the directory index itself may also be encrypted
             archive.Seek(directoryIndexOffset);
 
-            Dictionary<string, Dictionary<string, int>> directories;
+            Dictionary<string, Dictionary<string, int>>? directories;
             if (info.IsIndexEncrypted && aesKey != null)
             {
                 int alignedSize = Crypto.AesDecryptor.Align16((int)directoryIndexSize);
-                var encryptedDirData = archive.ReadBytes(alignedSize);
+                if (!archive.TryReadBytes(alignedSize, out var encryptedDirData))
+                    yield break;
+
                 var decryptedDirData = Crypto.AesDecryptor.Decrypt(encryptedDirData, aesKey);
 
                 using var dirStream = new MemoryStream(decryptedDirData, 0, (int)directoryIndexSize);
@@ -161,6 +203,9 @@ public class PakReader : IContainerReader
             {
                 directories = ReadDirectoryIndex(archive);
             }
+
+            if (directories == null)
+                yield break;
 
             // Decode entries
             foreach (var entry in DecodeEntries(encodedEntries, directories, mountPoint, filePath, info.CompressionMethods))
@@ -177,21 +222,31 @@ public class PakReader : IContainerReader
         }
     }
 
-    private Dictionary<string, Dictionary<string, int>> ReadDirectoryIndex(ArchiveReader archive)
+    private Dictionary<string, Dictionary<string, int>>? ReadDirectoryIndex(ArchiveReader archive)
     {
-        var directoryCount = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var directoryCount))
+            return null;
+
         var directories = new Dictionary<string, Dictionary<string, int>>(directoryCount);
 
         for (var i = 0; i < directoryCount; i++)
         {
-            var directoryName = archive.ReadFString();
-            var fileCount = archive.ReadInt32();
+            if (!archive.TryReadFString(out var directoryName))
+                return directories;
+
+            if (!archive.TryReadInt32(out var fileCount))
+                return directories;
+
             var files = new Dictionary<string, int>(fileCount);
 
             for (var j = 0; j < fileCount; j++)
             {
-                var fileName = archive.ReadFString();
-                var encodedOffset = archive.ReadInt32();
+                if (!archive.TryReadFString(out var fileName))
+                    break;
+
+                if (!archive.TryReadInt32(out var encodedOffset))
+                    break;
+
                 files[fileName] = encodedOffset;
             }
 
@@ -220,14 +275,16 @@ public class PakReader : IContainerReader
                 var path = CombinePaths(mountPoint, directory, fileName);
                 var entry = DecodeEntry(archive, path, pakFilePath, compressionMethods);
 
-                yield return entry;
+                if (entry != null)
+                    yield return entry;
             }
         }
     }
 
-    private PakEntry DecodeEntry(ArchiveReader archive, string path, string pakFilePath, string[] compressionMethods)
+    private PakEntry? DecodeEntry(ArchiveReader archive, string path, string pakFilePath, string[] compressionMethods)
     {
-        var flags = archive.ReadUInt32();
+        if (!archive.TryReadUInt32(out var flags))
+            return null;
 
         var is32BitOffset = flags >> 31 != 0;
         var is32BitUncompressed = (flags >> 30 & 1) != 0;
@@ -245,15 +302,60 @@ public class PakReader : IContainerReader
         // Compression block size
         uint compressionBlockSize;
         if (compressionBlockSizeField == 0x3F)
-            compressionBlockSize = archive.ReadUInt32();
+        {
+            if (!archive.TryReadUInt32(out compressionBlockSize))
+                return null;
+        }
         else
+        {
             compressionBlockSize = compressionBlockSizeField << 11;
+        }
 
-        var offset = is32BitOffset ? archive.ReadUInt32() : archive.ReadInt64();
-        var uncompressedSize = is32BitUncompressed ? archive.ReadUInt32() : archive.ReadInt64();
-        var compressedSize = compressionMethodIndex != 0
-            ? is32BitCompressed ? archive.ReadUInt32() : archive.ReadInt64()
-            : uncompressedSize;
+        long offset;
+        if (is32BitOffset)
+        {
+            if (!archive.TryReadUInt32(out var offset32))
+                return null;
+            offset = offset32;
+        }
+        else
+        {
+            if (!archive.TryReadInt64(out offset))
+                return null;
+        }
+
+        long uncompressedSize;
+        if (is32BitUncompressed)
+        {
+            if (!archive.TryReadUInt32(out var uncompressed32))
+                return null;
+            uncompressedSize = uncompressed32;
+        }
+        else
+        {
+            if (!archive.TryReadInt64(out uncompressedSize))
+                return null;
+        }
+
+        long compressedSize;
+        if (compressionMethodIndex != 0)
+        {
+            if (is32BitCompressed)
+            {
+                if (!archive.TryReadUInt32(out var compressed32))
+                    return null;
+                compressedSize = compressed32;
+            }
+            else
+            {
+                if (!archive.TryReadInt64(out compressedSize))
+                    return null;
+            }
+        }
+        else
+        {
+            compressedSize = uncompressedSize;
+        }
 
         // Fix compression block size for single block
         if (blockCount == 1 && compressionBlockSize == 0)
@@ -282,7 +384,9 @@ public class PakReader : IContainerReader
 
             for (int i = 0; i < blockCount; i++)
             {
-                var blockSize = archive.ReadUInt32();
+                if (!archive.TryReadUInt32(out var blockSize))
+                    return null;
+
                 blocks[i] = new PakCompressionBlock(blockOffset, blockOffset + blockSize);
                 blockOffset += isEncrypted ? blockSize + 15 & ~15u : blockSize;
             }

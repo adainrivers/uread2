@@ -6,7 +6,7 @@ namespace URead2.Deserialization.Abstractions;
 
 /// <summary>
 /// Context for property reading operations.
-/// Provides name table, type resolution, and object reference resolution.
+/// Provides name table, type resolution, object reference resolution, and error tracking.
 /// </summary>
 public class PropertyReadContext
 {
@@ -14,6 +14,58 @@ public class PropertyReadContext
     /// Name table from the asset.
     /// </summary>
     public required string[] NameTable { get; init; }
+
+    #region Error Tracking
+
+    /// <summary>
+    /// Fatal error code if a fatal error occurred, null otherwise.
+    /// </summary>
+    public ReadErrorCode? FatalError { get; private set; }
+
+    /// <summary>
+    /// Stream position where fatal error occurred.
+    /// </summary>
+    public long FatalPosition { get; private set; }
+
+    /// <summary>
+    /// Detail message for fatal error.
+    /// </summary>
+    public string? FatalDetail { get; private set; }
+
+    /// <summary>
+    /// List of non-fatal diagnostics (warnings/recoveries).
+    /// Lazily allocated on first warning.
+    /// </summary>
+    public List<ReadDiagnostic>? Diagnostics { get; private set; }
+
+    /// <summary>
+    /// True if a fatal error has occurred.
+    /// </summary>
+    public bool HasFatalError => FatalError.HasValue;
+
+    /// <summary>
+    /// Records a fatal error. Only the first fatal error is recorded.
+    /// </summary>
+    public void Fatal(ReadErrorCode code, long position, string? detail = null)
+    {
+        if (!HasFatalError)
+        {
+            FatalError = code;
+            FatalPosition = position;
+            FatalDetail = detail;
+        }
+    }
+
+    /// <summary>
+    /// Records a non-fatal diagnostic (warning or recovery).
+    /// </summary>
+    public void Warn(DiagnosticCode code, long position, string? detail = null)
+    {
+        Diagnostics ??= [];
+        Diagnostics.Add(new ReadDiagnostic(code, position, detail));
+    }
+
+    #endregion
 
     /// <summary>
     /// Type registry for type and schema lookup.

@@ -31,8 +31,11 @@ public class DataTableTypeReader : ITypeReader
         var rowStructName = ResolveRowStructName(bag);
 
         // 3. Skip unknown 4 bytes (always 0) and read row count
-        ar.ReadInt32(); // Skip unknown field
-        var numRows = ar.ReadInt32();
+        if (!ar.TryReadInt32(out _)) // Skip unknown field
+            return bag;
+
+        if (!ar.TryReadInt32(out var numRows))
+            return bag;
 
         if (numRows < 0 || numRows > 1000000)
             return bag;
@@ -53,7 +56,9 @@ public class DataTableTypeReader : ITypeReader
             {
                 for (int i = 0; i < numRows; i++)
                 {
-                    var rowName = ReadFName(ar, context.NameTable);
+                    var rowName = ReadFName(ar, context);
+                    if (rowName == null)
+                        break;
                     var rowData = ReadRowStruct(ar, context, rowStructName);
                     rows[rowName] = rowData;
                 }
@@ -101,11 +106,12 @@ public class DataTableTypeReader : ITypeReader
     /// <summary>
     /// Reads an FName from the archive using the name table.
     /// </summary>
-    private static string ReadFName(ArchiveReader ar, string[] nameTable)
+    private static string? ReadFName(ArchiveReader ar, PropertyReadContext context)
     {
-        int index = ar.ReadInt32();
-        int number = ar.ReadInt32();
+        if (!ar.TryReadInt32(out int index) || !ar.TryReadInt32(out int number))
+            return null;
 
+        var nameTable = context.NameTable;
         if (index < 0 || index >= nameTable.Length)
             return "None";
 

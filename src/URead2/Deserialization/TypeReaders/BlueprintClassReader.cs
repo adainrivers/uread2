@@ -58,17 +58,22 @@ public class BlueprintClassReader : ITypeReader
             // 6. Script bytecode
 
             // Skip unknown 4 bytes before SuperStruct
-            ar.ReadInt32();
+            if (!ar.TryReadInt32(out _))
+                return null;
 
             // Skip SuperStruct
-            ar.ReadInt32();
+            if (!ar.TryReadInt32(out _))
+                return null;
 
             // Read Children array (FPackageIndex[])
-            var childCount = ar.ReadInt32();
+            if (!ar.TryReadInt32(out var childCount))
+                return null;
+
             if (childCount > 0 && childCount < 65536)
             {
                 // Skip the children array (FPackageIndex = 4 bytes each)
-                ar.Skip(childCount * 4);
+                if (!ar.TrySkip(childCount * 4))
+                    return null;
             }
 
             // Read ChildProperties array - this is what we want!

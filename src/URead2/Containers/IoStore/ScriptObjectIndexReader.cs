@@ -28,8 +28,10 @@ public class ScriptObjectIndexReader
         var chunkIds = new List<(ulong Id, byte Type)>(header.EntryCount);
         for (int i = 0; i < header.EntryCount; i++)
         {
-            var chunkIdLow = tocArchive.ReadUInt64();
-            var chunkIdHigh = tocArchive.ReadUInt32();
+            if (!tocArchive.TryReadUInt64(out var chunkIdLow) ||
+                !tocArchive.TryReadUInt32(out var chunkIdHigh))
+                return null;
+
             var chunkType = (byte)(chunkIdHigh >> 24);
             chunkIds.Add((chunkIdLow, chunkType));
         }
@@ -37,7 +39,9 @@ public class ScriptObjectIndexReader
         var chunkOffsetLengths = new List<(long Offset, long Length)>(header.EntryCount);
         for (int i = 0; i < header.EntryCount; i++)
         {
-            var data = tocArchive.ReadBytes(10);
+            if (!tocArchive.TryReadBytes(10, out var data))
+                return null;
+
             var offset = ReadUInt40BE(data, 0);
             var length = ReadUInt40BE(data, 5);
             chunkOffsetLengths.Add((offset, length));
@@ -74,22 +78,26 @@ public class ScriptObjectIndexReader
 
         var nameMap = ReadNameBatch(chunkArchive);
 
-        var numScriptObjects = chunkArchive.ReadInt32();
+        if (!chunkArchive.TryReadInt32(out var numScriptObjects))
+            return null;
+
         var scriptObjects = new Dictionary<ulong, ScriptObjectEntry>(numScriptObjects);
 
         for (int i = 0; i < numScriptObjects; i++)
         {
-            var nameIndexRaw = chunkArchive.ReadUInt32();
-            var extraIndex = chunkArchive.ReadUInt32();
+            if (!chunkArchive.TryReadUInt32(out var nameIndexRaw) ||
+                !chunkArchive.TryReadUInt32(out var extraIndex))
+                break;
 
             var nameIndex = nameIndexRaw & 0x3FFFFFFF;
             var objectName = nameIndex < nameMap.Length
                 ? (extraIndex > 0 ? $"{nameMap[nameIndex]}_{extraIndex - 1}" : nameMap[nameIndex])
                 : $"Name_{nameIndex}";
 
-            var globalIndex = chunkArchive.ReadUInt64();
-            var outerIndex = chunkArchive.ReadUInt64();
-            var cdoClassIndex = chunkArchive.ReadUInt64();
+            if (!chunkArchive.TryReadUInt64(out var globalIndex) ||
+                !chunkArchive.TryReadUInt64(out var outerIndex) ||
+                !chunkArchive.TryReadUInt64(out var cdoClassIndex))
+                break;
 
             var entry = new ScriptObjectEntry(objectName, globalIndex, outerIndex, cdoClassIndex);
             scriptObjects[globalIndex] = entry;
@@ -102,18 +110,35 @@ public class ScriptObjectIndexReader
 
     private TocHeader? ReadTocHeader(ArchiveReader archive)
     {
-        var magic = Encoding.ASCII.GetString(archive.ReadBytes(16));
+        if (!archive.TryReadBytes(16, out var magicBytes))
+            return null;
+
+        var magic = Encoding.ASCII.GetString(magicBytes);
         if (magic != "-==--==--==--==-")
             return null;
 
-        archive.ReadByte(); // version
-        archive.Skip(1 + 2); // Reserved
-        var headerSize = archive.ReadInt32();
-        var entryCount = archive.ReadInt32();
-        archive.Skip(4 * 6); // Various counts
-        archive.Skip(8); // ContainerId
-        archive.Skip(16); // EncryptionKeyGuid
-        var containerFlags = archive.ReadByte();
+        if (!archive.TryReadByte(out _)) // version
+            return null;
+
+        if (!archive.TrySkip(1 + 2)) // Reserved
+            return null;
+
+        if (!archive.TryReadInt32(out var headerSize) ||
+            !archive.TryReadInt32(out var entryCount))
+            return null;
+
+        if (!archive.TrySkip(4 * 6)) // Various counts
+            return null;
+
+        if (!archive.TrySkip(8)) // ContainerId
+            return null;
+
+        if (!archive.TrySkip(16)) // EncryptionKeyGuid
+            return null;
+
+        if (!archive.TryReadByte(out var containerFlags))
+            return null;
+
         var isEncrypted = (containerFlags & 0x02) != 0;
 
         return new TocHeader(headerSize, entryCount, isEncrypted);
@@ -121,15 +146,24 @@ public class ScriptObjectIndexReader
 
     private static string[] ReadNameBatch(ArchiveReader archive)
     {
-        var numNames = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var numNames))
+            return [];
+
         if (numNames <= 0 || numNames > 1000000)
             return [];
 
-        archive.ReadInt32(); // numStringBytes
-        archive.Skip(8); // hashVersion
-        archive.Skip((long)numNames * 8); // hashes
+        if (!archive.TryReadInt32(out _)) // numStringBytes
+            return [];
 
-        var headerBytes = archive.ReadBytes(numNames * 2);
+        if (!archive.TrySkip(8)) // hashVersion
+            return [];
+
+        if (!archive.TrySkip((long)numNames * 8)) // hashes
+            return [];
+
+        if (!archive.TryReadBytes(numNames * 2, out var headerBytes))
+            return [];
+
         var names = new string[numNames];
 
         for (int i = 0; i < numNames; i++)
@@ -147,12 +181,20 @@ public class ScriptObjectIndexReader
 
             if (isUtf16)
             {
-                var bytes = archive.ReadBytes(length * 2);
+                if (!archive.TryReadBytes(length * 2, out var bytes))
+                {
+                    names[i] = "";
+                    continue;
+                }
                 names[i] = Encoding.Unicode.GetString(bytes);
             }
             else
             {
-                var bytes = archive.ReadBytes(length);
+                if (!archive.TryReadBytes(length, out var bytes))
+                {
+                    names[i] = "";
+                    continue;
+                }
                 names[i] = Encoding.UTF8.GetString(bytes);
             }
         }

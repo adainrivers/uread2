@@ -36,35 +36,55 @@ public sealed class UsmapLoader
         using var archive = new ArchiveReader(stream, leaveOpen: true);
 
         // Header
-        var magic = archive.ReadUInt16();
+        if (!archive.TryReadUInt16(out var magic))
+            throw new InvalidDataException("Failed to read .usmap magic");
+
         if (magic != UsmapMagic)
             throw new InvalidDataException($"Invalid .usmap magic: 0x{magic:X4}");
 
-        var version = (EUsmapVersion)archive.ReadByte();
+        if (!archive.TryReadByte(out var versionByte))
+            throw new InvalidDataException("Failed to read .usmap version");
+
+        var version = (EUsmapVersion)versionByte;
         if (version > EUsmapVersion.Latest)
             throw new InvalidDataException($"Unsupported .usmap version: {version}");
 
         // Package versioning (optional)
         if (version >= EUsmapVersion.PackageVersioning)
         {
-            bool hasVersioning = archive.ReadInt32() != 0;
+            if (!archive.TryReadInt32(out var hasVersioningRaw))
+                throw new InvalidDataException("Failed to read versioning flag");
+
+            bool hasVersioning = hasVersioningRaw != 0;
             if (hasVersioning)
             {
-                archive.Skip(4); // FileVersionUE4
-                archive.Skip(4); // FileVersionUE5
-                int customVersionCount = archive.ReadInt32();
-                archive.Skip(customVersionCount * 20); // GUID (16) + Version (4)
-                archive.Skip(4); // NetCL
+                if (!archive.TrySkip(4)) // FileVersionUE4
+                    throw new InvalidDataException("Failed to skip FileVersionUE4");
+                if (!archive.TrySkip(4)) // FileVersionUE5
+                    throw new InvalidDataException("Failed to skip FileVersionUE5");
+                if (!archive.TryReadInt32(out int customVersionCount))
+                    throw new InvalidDataException("Failed to read custom version count");
+                if (!archive.TrySkip(customVersionCount * 20)) // GUID (16) + Version (4)
+                    throw new InvalidDataException("Failed to skip custom versions");
+                if (!archive.TrySkip(4)) // NetCL
+                    throw new InvalidDataException("Failed to skip NetCL");
             }
         }
 
         // Compression
-        var compression = (EUsmapCompression)archive.ReadByte();
-        var compressedSize = archive.ReadUInt32();
-        var decompressedSize = archive.ReadUInt32();
+        if (!archive.TryReadByte(out var compressionByte))
+            throw new InvalidDataException("Failed to read compression method");
+
+        var compression = (EUsmapCompression)compressionByte;
+
+        if (!archive.TryReadUInt32(out var compressedSize) ||
+            !archive.TryReadUInt32(out var decompressedSize))
+            throw new InvalidDataException("Failed to read compression sizes");
 
         // Read and decompress data
-        var compressedData = archive.ReadBytes((int)compressedSize);
+        if (!archive.TryReadBytes((int)compressedSize, out var compressedData))
+            throw new InvalidDataException("Failed to read compressed data");
+
         byte[] data;
 
         if (compression == EUsmapCompression.None)
@@ -118,52 +138,87 @@ public sealed class UsmapLoader
     private static void ParseAndLoad(ArchiveReader archive, EUsmapVersion version, TypeRegistry registry)
     {
         // Name map
-        var nameCount = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var nameCount))
+            throw new InvalidDataException("Failed to read name count");
+
         var nameMap = new string[nameCount];
 
         for (int i = 0; i < nameCount; i++)
         {
-            int length = version >= EUsmapVersion.LongFName
-                ? archive.ReadUInt16()
-                : archive.ReadByte();
+            int length;
+            if (version >= EUsmapVersion.LongFName)
+            {
+                if (!archive.TryReadUInt16(out var len16))
+                    throw new InvalidDataException($"Failed to read name length at index {i}");
+                length = len16;
+            }
+            else
+            {
+                if (!archive.TryReadByte(out var len8))
+                    throw new InvalidDataException($"Failed to read name length at index {i}");
+                length = len8;
+            }
 
-            var bytes = archive.ReadBytes(length);
+            if (!archive.TryReadBytes(length, out var bytes))
+                throw new InvalidDataException($"Failed to read name bytes at index {i}");
+
             nameMap[i] = Encoding.UTF8.GetString(bytes);
         }
 
         // Enums
-        var enumCount = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var enumCount))
+            throw new InvalidDataException("Failed to read enum count");
+
         for (int i = 0; i < enumCount; i++)
         {
             var enumDef = ReadEnum(archive, nameMap, version);
-            registry.Register(enumDef);
+            if (enumDef != null)
+                registry.Register(enumDef);
         }
 
         // Types (schemas)
-        var schemaCount = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var schemaCount))
+            throw new InvalidDataException("Failed to read schema count");
+
         for (int i = 0; i < schemaCount; i++)
         {
             var typeDef = ReadType(archive, nameMap, version);
-            registry.Register(typeDef);
+            if (typeDef != null)
+                registry.Register(typeDef);
         }
     }
 
-    private static EnumDefinition ReadEnum(ArchiveReader archive, string[] nameMap, EUsmapVersion version)
+    private static EnumDefinition? ReadEnum(ArchiveReader archive, string[] nameMap, EUsmapVersion version)
     {
         var enumName = ReadName(archive, nameMap);
+        if (enumName == null)
+            return null;
+
         var values = new Dictionary<long, string>();
 
-        int valueCount = version >= EUsmapVersion.LargeEnums
-            ? archive.ReadUInt16()
-            : archive.ReadByte();
+        int valueCount;
+        if (version >= EUsmapVersion.LargeEnums)
+        {
+            if (!archive.TryReadUInt16(out var vc16))
+                return null;
+            valueCount = vc16;
+        }
+        else
+        {
+            if (!archive.TryReadByte(out var vc8))
+                return null;
+            valueCount = vc8;
+        }
 
         if (version >= EUsmapVersion.ExplicitEnumValues)
         {
             for (int j = 0; j < valueCount; j++)
             {
-                var value = archive.ReadInt64();
+                if (!archive.TryReadInt64(out var value))
+                    break;
                 var name = ReadName(archive, nameMap);
-                values[value] = name;
+                if (name != null)
+                    values[value] = name;
             }
         }
         else
@@ -171,28 +226,41 @@ public sealed class UsmapLoader
             for (int j = 0; j < valueCount; j++)
             {
                 var name = ReadName(archive, nameMap);
-                values[j] = name;
+                if (name != null)
+                    values[j] = name;
             }
         }
 
         return new EnumDefinition(enumName, TypeSource.Runtime, values);
     }
 
-    private static TypeDefinition ReadType(ArchiveReader archive, string[] nameMap, EUsmapVersion version)
+    private static TypeDefinition? ReadType(ArchiveReader archive, string[] nameMap, EUsmapVersion version)
     {
         var name = ReadName(archive, nameMap);
+        if (name == null)
+            return null;
+
         var superType = ReadNameOrNull(archive, nameMap);
-        var propertyCount = archive.ReadUInt16();
-        var serializablePropertyCount = archive.ReadUInt16();
+
+        if (!archive.TryReadUInt16(out var propertyCount) ||
+            !archive.TryReadUInt16(out var serializablePropertyCount))
+            return null;
 
         var properties = new Dictionary<int, PropertyDefinition>(serializablePropertyCount);
 
         for (int i = 0; i < serializablePropertyCount; i++)
         {
-            var schemaIndex = archive.ReadUInt16();
-            var arraySize = archive.ReadByte();
+            if (!archive.TryReadUInt16(out var schemaIndex) ||
+                !archive.TryReadByte(out var arraySize))
+                break;
+
             var propName = ReadName(archive, nameMap);
+            if (propName == null)
+                break;
+
             var propType = ReadPropertyType(archive, nameMap);
+            if (propType == null)
+                break;
 
             // Expand static arrays
             for (int j = 0; j < arraySize; j++)
@@ -214,15 +282,20 @@ public sealed class UsmapLoader
         };
     }
 
-    private static PropertyType ReadPropertyType(ArchiveReader archive, string[] nameMap)
+    private static PropertyType? ReadPropertyType(ArchiveReader archive, string[] nameMap)
     {
-        var kind = (PropertyKind)archive.ReadByte();
+        if (!archive.TryReadByte(out var kindByte))
+            return null;
+
+        var kind = (PropertyKind)kindByte;
 
         switch (kind)
         {
             case PropertyKind.EnumProperty:
                 var innerType = ReadPropertyType(archive, nameMap);
                 var enumName = ReadName(archive, nameMap);
+                if (innerType == null || enumName == null)
+                    return null;
                 return new PropertyType(PropertyKind.EnumProperty)
                 {
                     InnerType = innerType,
@@ -230,39 +303,46 @@ public sealed class UsmapLoader
                 };
 
             case PropertyKind.StructProperty:
-                return PropertyType.Struct(ReadName(archive, nameMap));
+                var structName = ReadName(archive, nameMap);
+                return structName != null ? PropertyType.Struct(structName) : null;
 
             case PropertyKind.ArrayProperty:
             case PropertyKind.SetProperty:
             case PropertyKind.OptionalProperty:
-                return new PropertyType(kind)
-                {
-                    InnerType = ReadPropertyType(archive, nameMap)
-                };
+                var inner = ReadPropertyType(archive, nameMap);
+                return inner != null ? new PropertyType(kind) { InnerType = inner } : null;
 
             case PropertyKind.MapProperty:
-                return PropertyType.Map(
-                    ReadPropertyType(archive, nameMap),
-                    ReadPropertyType(archive, nameMap));
+                var keyType = ReadPropertyType(archive, nameMap);
+                var valueType = ReadPropertyType(archive, nameMap);
+                return keyType != null && valueType != null
+                    ? PropertyType.Map(keyType, valueType)
+                    : null;
 
             default:
                 return PropertyType.Simple(kind);
         }
     }
 
-    private static string ReadName(ArchiveReader archive, string[] nameMap)
+    private static string? ReadName(ArchiveReader archive, string[] nameMap)
     {
-        var index = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var index))
+            return null;
+
         if (index < 0 || index >= nameMap.Length)
-            throw new InvalidDataException($"Invalid name index: {index}");
+            return null;
+
         return nameMap[index];
     }
 
     private static string? ReadNameOrNull(ArchiveReader archive, string[] nameMap)
     {
-        var index = archive.ReadInt32();
+        if (!archive.TryReadInt32(out var index))
+            return null;
+
         if (index < 0 || index >= nameMap.Length)
             return null;
+
         var name = nameMap[index];
         return string.IsNullOrEmpty(name) ? null : name;
     }

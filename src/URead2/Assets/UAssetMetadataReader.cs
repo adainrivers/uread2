@@ -16,8 +16,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
         using var archive = new ArchiveReader(stream, leaveOpen: true);
 
         // Read and validate magic
-        var magic = archive.ReadUInt32();
-        if (magic != PackageFileMagic)
+        if (!archive.TryReadUInt32(out var magic) || magic != PackageFileMagic)
             return null;
 
         // Read summary
@@ -58,16 +57,30 @@ public class UAssetMetadataReader : IAssetMetadataReader
     protected virtual PackageSummary? ReadSummary(ArchiveReader archive)
     {
         // Legacy version
-        int legacyVersion = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int legacyVersion))
+            return null;
+
         if (legacyVersion >= 0)
             return null; // UE3 not supported
 
         if (legacyVersion != -4)
-            archive.Skip(4); // Legacy UE3 version
+        {
+            if (!archive.TrySkip(4)) // Legacy UE3 version
+                return null;
+        }
 
-        int fileVersionUE4 = archive.ReadInt32();
-        int fileVersionUE5 = legacyVersion <= -8 ? archive.ReadInt32() : 0;
-        int fileVersionLicensee = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int fileVersionUE4))
+            return null;
+
+        int fileVersionUE5 = 0;
+        if (legacyVersion <= -8)
+        {
+            if (!archive.TryReadInt32(out fileVersionUE5))
+                return null;
+        }
+
+        if (!archive.TryReadInt32(out int fileVersionLicensee))
+            return null;
 
         // Unversioned packages - assume latest
         if (fileVersionUE4 == 0 && fileVersionUE5 == 0 && fileVersionLicensee == 0)
@@ -79,35 +92,53 @@ public class UAssetMetadataReader : IAssetMetadataReader
         // Custom versions
         if (legacyVersion <= -2)
         {
-            int customVersionCount = archive.ReadInt32();
-            archive.Skip(customVersionCount * 20);
+            if (!archive.TryReadInt32(out int customVersionCount))
+                return null;
+            if (!archive.TrySkip(customVersionCount * 20))
+                return null;
         }
 
-        int totalHeaderSize = archive.ReadInt32();
-        archive.ReadFString(); // PackageName
-        uint packageFlags = archive.ReadUInt32();
+        if (!archive.TryReadInt32(out int totalHeaderSize))
+            return null;
+
+        if (!archive.TryReadFString(out _)) // PackageName
+            return null;
+
+        if (!archive.TryReadUInt32(out uint packageFlags))
+            return null;
+
         bool isFilterEditorOnly = (packageFlags & 0x80000000) != 0;
         bool isUnversioned = (packageFlags & 0x2000) != 0; // PKG_UnversionedProperties
 
-        int nameCount = archive.ReadInt32();
-        int nameOffset = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int nameCount) || !archive.TryReadInt32(out int nameOffset))
+            return null;
 
         // Soft object paths (UE5.1+)
         if (fileVersionUE5 >= 1000)
-            archive.Skip(8);
+        {
+            if (!archive.TrySkip(8))
+                return null;
+        }
 
         // Localization ID
         if (!isFilterEditorOnly && fileVersionUE4 >= 516)
-            archive.ReadFString();
+        {
+            if (!archive.TryReadFString(out _))
+                return null;
+        }
 
         // Gatherable text data
         if (fileVersionUE4 >= 459)
-            archive.Skip(8);
+        {
+            if (!archive.TrySkip(8))
+                return null;
+        }
 
-        int exportCount = archive.ReadInt32();
-        int exportOffset = archive.ReadInt32();
-        int importCount = archive.ReadInt32();
-        int importOffset = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int exportCount) || !archive.TryReadInt32(out int exportOffset))
+            return null;
+
+        if (!archive.TryReadInt32(out int importCount) || !archive.TryReadInt32(out int importOffset))
+            return null;
 
         return new PackageSummary(
             fileVersionUE4, fileVersionUE5,
@@ -123,11 +154,12 @@ public class UAssetMetadataReader : IAssetMetadataReader
     /// </summary>
     protected virtual string ReadNameEntry(ArchiveReader archive, PackageSummary summary)
     {
-        var name = archive.ReadFString();
+        if (!archive.TryReadFString(out var name))
+            return string.Empty;
 
         // Skip hash (UE4.14+)
         if (summary.FileVersionUE4 >= 504)
-            archive.Skip(4);
+            archive.TrySkip(4);
 
         return name;
     }
@@ -139,7 +171,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
     {
         var classPackage = ReadFName(archive, nameTable);
         var className = ReadFName(archive, nameTable);
-        archive.Skip(4); // OuterIndex
+        archive.TrySkip(4); // OuterIndex
         var objectName = ReadFName(archive, nameTable);
 
         string packageName = "";
@@ -148,7 +180,7 @@ public class UAssetMetadataReader : IAssetMetadataReader
 
         // Optional flag (UE5+)
         if (summary.FileVersionUE5 >= 1000)
-            archive.Skip(1);
+            archive.TrySkip(1);
 
         return new AssetImport(objectName, className, packageName);
     }
@@ -158,58 +190,77 @@ public class UAssetMetadataReader : IAssetMetadataReader
     /// </summary>
     protected virtual AssetExport ReadExport(ArchiveReader archive, string[] nameTable, AssetImport[] imports, AssetExport[] exports, PackageSummary summary, int exportIndex)
     {
-        int classIndex = archive.ReadInt32();
-        int superIndex = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int classIndex))
+            return new AssetExport("Unknown", 0, 0, -1, false, 0);
+
+        if (!archive.TryReadInt32(out int superIndex))
+            superIndex = 0;
 
         int templateIndex = 0;
         if (summary.FileVersionUE4 >= 378)
-            templateIndex = archive.ReadInt32();
+            archive.TryReadInt32(out templateIndex);
 
-        int outerIndex = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int outerIndex))
+            outerIndex = 0;
+
         var objectName = ReadFName(archive, nameTable);
-        uint objectFlags = archive.ReadUInt32();
+
+        if (!archive.TryReadUInt32(out uint objectFlags))
+            objectFlags = 0;
+
         bool isPublic = (objectFlags & 1) != 0;
 
         long serialSize, serialOffset;
         if (summary.FileVersionUE4 < 511)
         {
-            serialSize = archive.ReadInt32();
-            serialOffset = archive.ReadInt32();
+            if (!archive.TryReadInt32(out var ss) || !archive.TryReadInt32(out var so))
+            {
+                serialSize = 0;
+                serialOffset = 0;
+            }
+            else
+            {
+                serialSize = ss;
+                serialOffset = so;
+            }
         }
         else
         {
-            serialSize = archive.ReadInt64();
-            serialOffset = archive.ReadInt64();
+            if (!archive.TryReadInt64(out serialSize) || !archive.TryReadInt64(out serialOffset))
+            {
+                serialSize = 0;
+                serialOffset = 0;
+            }
         }
 
         // Booleans in export table are serialized as 4-byte integers
-        archive.Skip(12); // ForcedExport (4), NotForClient (4), NotForServer (4)
+        archive.TrySkip(12); // ForcedExport (4), NotForClient (4), NotForServer (4)
 
         // Package GUID (removed in UE5)
         if (summary.FileVersionUE5 < 1000)
-            archive.Skip(16);
+            archive.TrySkip(16);
 
         // IsInheritedInstance (UE5+) - 4 bytes
         if (summary.FileVersionUE5 >= 1000)
-            archive.Skip(4);
+            archive.TrySkip(4);
 
-        archive.Skip(4); // PackageFlags
+        archive.TrySkip(4); // PackageFlags
 
         // NotAlwaysLoadedForEditorGame - 4 bytes
         if (summary.FileVersionUE4 >= 465)
-            archive.Skip(4);
+            archive.TrySkip(4);
 
         // IsAsset - 4 bytes
         if (summary.FileVersionUE4 >= 485)
-            archive.Skip(4);
+            archive.TrySkip(4);
 
         // GeneratePublicHash (UE5+) - 4 bytes
         if (summary.FileVersionUE5 >= 1000)
-            archive.Skip(4);
+            archive.TrySkip(4);
 
         // Preload dependencies
         if (summary.FileVersionUE4 >= 507)
-            archive.Skip(20);
+            archive.TrySkip(20);
 
         // Create export - resolve references to ResolvedRef objects
         var export = new AssetExport(objectName, serialOffset, serialSize, outerIndex, isPublic, 0);
@@ -228,8 +279,8 @@ public class UAssetMetadataReader : IAssetMetadataReader
 
     private static string ReadFName(ArchiveReader archive, string[] nameTable)
     {
-        int index = archive.ReadInt32();
-        int number = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int index) || !archive.TryReadInt32(out int number))
+            return "None";
 
         if (index < 0 || index >= nameTable.Length)
             return "None";

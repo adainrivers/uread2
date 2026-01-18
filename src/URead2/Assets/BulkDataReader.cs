@@ -13,7 +13,10 @@ public class BulkDataReader : IBulkDataReader
     /// <inheritdoc />
     public virtual byte[] ReadBulkData(ArchiveReader reader, Stream? bulkStream)
     {
-        var flags = (BulkDataFlags)reader.ReadUInt32();
+        if (!reader.TryReadUInt32(out var flagsRaw))
+            return [];
+
+        var flags = (BulkDataFlags)flagsRaw;
 
         long elementCount;
         long sizeOnDisk;
@@ -21,16 +24,19 @@ public class BulkDataReader : IBulkDataReader
 
         if (flags.HasFlag(BulkDataFlags.Size64Bit))
         {
-            elementCount = reader.ReadInt64();
-            sizeOnDisk = reader.ReadInt64();
+            if (!reader.TryReadInt64(out elementCount) || !reader.TryReadInt64(out sizeOnDisk))
+                return [];
         }
         else
         {
-            elementCount = reader.ReadInt32();
-            sizeOnDisk = reader.ReadInt32();
+            if (!reader.TryReadInt32(out var ec) || !reader.TryReadInt32(out var sd))
+                return [];
+            elementCount = ec;
+            sizeOnDisk = sd;
         }
 
-        offsetInFile = reader.ReadInt64();
+        if (!reader.TryReadInt64(out offsetInFile))
+            return [];
 
         if (elementCount == 0 || sizeOnDisk == 0)
             return [];
@@ -39,7 +45,9 @@ public class BulkDataReader : IBulkDataReader
         if (flags.HasFlag(BulkDataFlags.ForceInlinePayload) ||
             !flags.HasFlag(BulkDataFlags.PayloadInSeperateFile) && !flags.HasFlag(BulkDataFlags.PayloadAtEndOfFile))
         {
-            return reader.ReadBytes((int)sizeOnDisk);
+            if (!reader.TryReadBytes((int)sizeOnDisk, out var data))
+                return [];
+            return data;
         }
 
         // External data in .ubulk
@@ -59,7 +67,11 @@ public class BulkDataReader : IBulkDataReader
         {
             long currentPos = reader.Position;
             reader.Seek(offsetInFile);
-            var data = reader.ReadBytes((int)sizeOnDisk);
+            if (!reader.TryReadBytes((int)sizeOnDisk, out var data))
+            {
+                reader.Seek(currentPos);
+                return [];
+            }
             reader.Seek(currentPos);
             return data;
         }
@@ -70,7 +82,10 @@ public class BulkDataReader : IBulkDataReader
     /// <inheritdoc />
     public virtual ExportData ReadBulkDataPooled(ArchiveReader reader, Stream? bulkStream)
     {
-        var flags = (BulkDataFlags)reader.ReadUInt32();
+        if (!reader.TryReadUInt32(out var flagsRaw))
+            return new ExportData(null, 0);
+
+        var flags = (BulkDataFlags)flagsRaw;
 
         long elementCount;
         long sizeOnDisk;
@@ -78,16 +93,19 @@ public class BulkDataReader : IBulkDataReader
 
         if (flags.HasFlag(BulkDataFlags.Size64Bit))
         {
-            elementCount = reader.ReadInt64();
-            sizeOnDisk = reader.ReadInt64();
+            if (!reader.TryReadInt64(out elementCount) || !reader.TryReadInt64(out sizeOnDisk))
+                return new ExportData(null, 0);
         }
         else
         {
-            elementCount = reader.ReadInt32();
-            sizeOnDisk = reader.ReadInt32();
+            if (!reader.TryReadInt32(out var ec) || !reader.TryReadInt32(out var sd))
+                return new ExportData(null, 0);
+            elementCount = ec;
+            sizeOnDisk = sd;
         }
 
-        offsetInFile = reader.ReadInt64();
+        if (!reader.TryReadInt64(out offsetInFile))
+            return new ExportData(null, 0);
 
         if (elementCount == 0 || sizeOnDisk == 0)
             return new ExportData(null, 0);
@@ -98,7 +116,11 @@ public class BulkDataReader : IBulkDataReader
             if (flags.HasFlag(BulkDataFlags.ForceInlinePayload) ||
                 !flags.HasFlag(BulkDataFlags.PayloadInSeperateFile) && !flags.HasFlag(BulkDataFlags.PayloadAtEndOfFile))
             {
-                reader.ReadBytes(buffer.AsSpan(0, (int)sizeOnDisk));
+                if (!reader.TryReadBytes(buffer.AsSpan(0, (int)sizeOnDisk)))
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    return new ExportData(null, 0);
+                }
             }
             else if (flags.HasFlag(BulkDataFlags.PayloadInSeperateFile))
             {
@@ -115,7 +137,12 @@ public class BulkDataReader : IBulkDataReader
             {
                 long currentPos = reader.Position;
                 reader.Seek(offsetInFile);
-                reader.ReadBytes(buffer.AsSpan(0, (int)sizeOnDisk));
+                if (!reader.TryReadBytes(buffer.AsSpan(0, (int)sizeOnDisk)))
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    reader.Seek(currentPos);
+                    return new ExportData(null, 0);
+                }
                 reader.Seek(currentPos);
             }
             else

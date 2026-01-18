@@ -34,84 +34,151 @@ public class ArchiveReader : IDisposable
 
     public long Remaining => _stream.Length - _stream.Position;
 
-    public byte ReadByte()
+    public bool TryReadByte(out byte value)
     {
+        if (Remaining < 1)
+        {
+            value = 0;
+            return false;
+        }
         int b = _stream.ReadByte();
-        if (b < 0)
-            throw new EndOfStreamException();
-        return (byte)b;
+        value = (byte)b;
+        return b >= 0;
     }
 
-    public bool ReadBool() => ReadByte() != 0;
-
-    public short ReadInt16()
+    public bool TryReadBool(out bool value)
     {
+        if (TryReadByte(out byte b))
+        {
+            value = b != 0;
+            return true;
+        }
+        value = false;
+        return false;
+    }
+
+    public bool TryReadInt16(out short value)
+    {
+        if (Remaining < 2)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 2);
-        return BinaryPrimitives.ReadInt16LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadInt16LittleEndian(_buffer);
+        return true;
     }
 
-    public ushort ReadUInt16()
+    public bool TryReadUInt16(out ushort value)
     {
+        if (Remaining < 2)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 2);
-        return BinaryPrimitives.ReadUInt16LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadUInt16LittleEndian(_buffer);
+        return true;
     }
 
-    public int ReadInt32()
+    public bool TryReadInt32(out int value)
     {
+        if (Remaining < 4)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 4);
-        return BinaryPrimitives.ReadInt32LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadInt32LittleEndian(_buffer);
+        return true;
     }
 
-    public uint ReadUInt32()
+    public bool TryReadUInt32(out uint value)
     {
+        if (Remaining < 4)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 4);
-        return BinaryPrimitives.ReadUInt32LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadUInt32LittleEndian(_buffer);
+        return true;
     }
 
-    public long ReadInt64()
+    public bool TryReadInt64(out long value)
     {
+        if (Remaining < 8)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 8);
-        return BinaryPrimitives.ReadInt64LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadInt64LittleEndian(_buffer);
+        return true;
     }
 
-    public ulong ReadUInt64()
+    public bool TryReadUInt64(out ulong value)
     {
+        if (Remaining < 8)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 8);
-        return BinaryPrimitives.ReadUInt64LittleEndian(_buffer);
+        value = BinaryPrimitives.ReadUInt64LittleEndian(_buffer);
+        return true;
     }
 
-    public float ReadFloat()
+    public bool TryReadFloat(out float value)
     {
+        if (Remaining < 4)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 4);
-        return BinaryPrimitives.ReadSingleLittleEndian(_buffer);
+        value = BinaryPrimitives.ReadSingleLittleEndian(_buffer);
+        return true;
     }
 
-    public double ReadDouble()
+    public bool TryReadDouble(out double value)
     {
+        if (Remaining < 8)
+        {
+            value = 0;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 8);
-        return BinaryPrimitives.ReadDoubleLittleEndian(_buffer);
+        value = BinaryPrimitives.ReadDoubleLittleEndian(_buffer);
+        return true;
     }
 
-    public byte[] ReadBytes(int count)
+    public bool TryReadBytes(int count, out byte[] value)
     {
-        var buffer = new byte[count];
-        _stream.ReadExactly(buffer);
-        return buffer;
+        if (Remaining < count)
+        {
+            value = [];
+            return false;
+        }
+        value = new byte[count];
+        _stream.ReadExactly(value);
+        return true;
     }
 
-    public void ReadBytes(Span<byte> destination)
+    public bool TryReadBytes(Span<byte> destination)
     {
+        if (Remaining < destination.Length)
+            return false;
         _stream.ReadExactly(destination);
+        return true;
     }
 
-    /// <summary>
-    /// Reads an Unreal Engine FString (length-prefixed string).
-    /// </summary>
-    public string ReadFString()
+    public bool TrySkip(long count)
     {
-        if (!TryReadFString(out var result))
-            throw new InvalidDataException("Failed to read FString");
-        return result;
+        if (Remaining < count)
+            return false;
+        _stream.Seek(count, SeekOrigin.Current);
+        return true;
     }
 
     /// <summary>
@@ -122,11 +189,8 @@ public class ArchiveReader : IDisposable
     {
         result = string.Empty;
 
-        // Need at least 4 bytes for length
-        if (Remaining < 4)
+        if (!TryReadInt32(out int length))
             return false;
-
-        int length = ReadInt32();
 
         if (length == 0)
             return true; // Empty string is valid
@@ -191,28 +255,29 @@ public class ArchiveReader : IDisposable
     }
 
     /// <summary>
-    /// Reads an Unreal Engine GUID (16 bytes).
+    /// Tries to read an Unreal Engine GUID (16 bytes).
     /// </summary>
-    public Guid ReadGuid()
+    public bool TryReadGuid(out Guid value)
     {
+        if (Remaining < 16)
+        {
+            value = Guid.Empty;
+            return false;
+        }
         _stream.ReadExactly(_buffer, 0, 16);
-        return new Guid(
+        value = new Guid(
             BinaryPrimitives.ReadUInt32LittleEndian(_buffer.AsSpan(0, 4)),
             BinaryPrimitives.ReadUInt16LittleEndian(_buffer.AsSpan(4, 2)),
             BinaryPrimitives.ReadUInt16LittleEndian(_buffer.AsSpan(6, 2)),
             _buffer[8], _buffer[9], _buffer[10], _buffer[11],
             _buffer[12], _buffer[13], _buffer[14], _buffer[15]
         );
+        return true;
     }
 
     public void Seek(long offset, SeekOrigin origin = SeekOrigin.Begin)
     {
         _stream.Seek(offset, origin);
-    }
-
-    public void Skip(long count)
-    {
-        _stream.Seek(count, SeekOrigin.Current);
     }
 
     protected virtual void Dispose(bool disposing)

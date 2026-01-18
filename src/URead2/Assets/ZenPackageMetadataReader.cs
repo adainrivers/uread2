@@ -55,7 +55,9 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             importedPublicExportHashes = new ulong[hashCount];
             for (int i = 0; i < hashCount && archive.Position + 8 <= streamLength; i++)
             {
-                importedPublicExportHashes[i] = archive.ReadUInt64();
+                if (!archive.TryReadUInt64(out var hash))
+                    break;
+                importedPublicExportHashes[i] = hash;
             }
         }
 
@@ -105,45 +107,69 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     /// </summary>
     protected virtual ZenSummary? ReadSummary(ArchiveReader archive)
     {
-        bool hasVersioningInfo = archive.ReadUInt32() != 0;
-        uint headerSize = archive.ReadUInt32();
+        if (!archive.TryReadUInt32(out var hasVersioningInfoRaw))
+            return null;
+
+        bool hasVersioningInfo = hasVersioningInfoRaw != 0;
+
+        if (!archive.TryReadUInt32(out uint headerSize))
+            return null;
 
         // Validate header size is reasonable (large maps can have headers up to 100MB+)
         if (headerSize == 0 || headerSize > 500 * 1024 * 1024)
             return null;
 
-        archive.Skip(8); // Name (FMappedName)
-        uint packageFlags = archive.ReadUInt32();
-        bool isUnversioned = (packageFlags & 0x2000) != 0; // PKG_UnversionedProperties
-        archive.Skip(4); // CookedHeaderSize
+        if (!archive.TrySkip(8)) // Name (FMappedName)
+            return null;
 
-        int importedPublicExportHashesOffset = archive.ReadInt32();
-        int importMapOffset = archive.ReadInt32();
-        int exportMapOffset = archive.ReadInt32();
-        int exportBundleEntriesOffset = archive.ReadInt32();
+        if (!archive.TryReadUInt32(out uint packageFlags))
+            return null;
+
+        bool isUnversioned = (packageFlags & 0x2000) != 0; // PKG_UnversionedProperties
+
+        if (!archive.TrySkip(4)) // CookedHeaderSize
+            return null;
+
+        if (!archive.TryReadInt32(out int importedPublicExportHashesOffset))
+            return null;
+
+        if (!archive.TryReadInt32(out int importMapOffset))
+            return null;
+
+        if (!archive.TryReadInt32(out int exportMapOffset))
+            return null;
+
+        if (!archive.TryReadInt32(out int exportBundleEntriesOffset))
+            return null;
 
         // Read remaining fields to advance position correctly
         // This is either:
         // - UE5.3+: DependencyBundleHeadersOffset (4), DependencyBundleEntriesOffset (4), ImportedPackageNamesOffset (4)
         // - UE5.0-5.2: GraphDataOffset (4)
         // We try to detect the format and skip appropriately
-        int field1 = archive.ReadInt32(); // GraphDataOffset or DependencyBundleHeadersOffset
+        if (!archive.TryReadInt32(out int field1)) // GraphDataOffset or DependencyBundleHeadersOffset
+            return null;
+
         int importedPackageNamesOffset = -1;
 
         // Check if we have more data for the new format (UE5.3+)
         long currentPos = archive.Position;
         if (currentPos + 8 <= archive.Length)
         {
-            int field2 = archive.ReadInt32(); // DependencyBundleEntriesOffset
-            int field3 = archive.ReadInt32(); // ImportedPackageNamesOffset
-
-            // Heuristic: In new format (UE5.3+), the fields should form a valid sequence
-            // field1 = DependencyBundleHeadersOffset (after ExportBundleEntriesOffset)
-            // field2 = DependencyBundleEntriesOffset (after field1)
-            // field3 = ImportedPackageNamesOffset (after field2, before headerSize)
-            if (field1 >= exportBundleEntriesOffset && field2 >= field1 && field3 >= field2 && field3 < (int)headerSize)
+            if (archive.TryReadInt32(out int field2) && archive.TryReadInt32(out int field3))
             {
-                importedPackageNamesOffset = field3;
+                // Heuristic: In new format (UE5.3+), the fields should form a valid sequence
+                // field1 = DependencyBundleHeadersOffset (after ExportBundleEntriesOffset)
+                // field2 = DependencyBundleEntriesOffset (after field1)
+                // field3 = ImportedPackageNamesOffset (after field2, before headerSize)
+                if (field1 >= exportBundleEntriesOffset && field2 >= field1 && field3 >= field2 && field3 < (int)headerSize)
+                {
+                    importedPackageNamesOffset = field3;
+                }
+                else
+                {
+                    archive.Position = currentPos;
+                }
             }
             else
             {
@@ -166,14 +192,16 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         if (archive.Position + 16 > streamLength)
             return;
 
-        archive.Skip(4); // ZenVersion
-        archive.Skip(8); // PackageVersion (FileVersionUE4 + FileVersionUE5)
-        archive.Skip(4); // LicenseeVersion
+        archive.TrySkip(4); // ZenVersion
+        archive.TrySkip(8); // PackageVersion (FileVersionUE4 + FileVersionUE5)
+        archive.TrySkip(4); // LicenseeVersion
 
         if (archive.Position + 4 > streamLength)
             return;
 
-        int customVersionCount = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int customVersionCount))
+            return;
+
         if (customVersionCount < 0 || customVersionCount > 10000)
             return;
 
@@ -181,7 +209,7 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         if (archive.Position + skipSize > streamLength)
             return;
 
-        archive.Skip(skipSize); // Each: GUID (16) + Version (4)
+        archive.TrySkip(skipSize); // Each: GUID (16) + Version (4)
     }
 
     /// <summary>
@@ -191,15 +219,20 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     {
         long streamLength = archive.Length;
 
-        int numNames = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int numNames))
+            return [];
+
         if (numNames <= 0 || numNames > 1000000) // Sanity check
             return [];
 
-        int numStringBytes = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int numStringBytes))
+            return [];
+
         if (numStringBytes < 0 || numStringBytes > streamLength)
             return [];
 
-        archive.Skip(8); // hashVersion
+        if (!archive.TrySkip(8)) // hashVersion
+            return [];
 
         // Check we have enough room for hashes
         long hashesSize = (long)numNames * 8;
@@ -207,7 +240,8 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             return [];
 
         // Skip hashes (8 bytes each)
-        archive.Skip(hashesSize);
+        if (!archive.TrySkip(hashesSize))
+            return [];
 
         // Check we have enough room for headers
         long headersSize = (long)numNames * 2;
@@ -215,7 +249,9 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
             return [];
 
         // Read headers and strings
-        var headerBytes = archive.ReadBytes(numNames * 2);
+        if (!archive.TryReadBytes(numNames * 2, out var headerBytes))
+            return [];
+
         var names = new string[numNames];
 
         for (int i = 0; i < numNames; i++)
@@ -240,12 +276,20 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
 
             if (isUtf16)
             {
-                var bytes = archive.ReadBytes(length * 2);
+                if (!archive.TryReadBytes(length * 2, out var bytes))
+                {
+                    names[i] = "";
+                    continue;
+                }
                 names[i] = Encoding.Unicode.GetString(bytes);
             }
             else
             {
-                var bytes = archive.ReadBytes(length);
+                if (!archive.TryReadBytes(length, out var bytes))
+                {
+                    names[i] = "";
+                    continue;
+                }
                 names[i] = Encoding.UTF8.GetString(bytes);
             }
         }
@@ -262,7 +306,9 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         if (archive.Position + 4 > archive.Length)
             return [];
 
-        int count = archive.ReadInt32();
+        if (!archive.TryReadInt32(out int count))
+            return [];
+
         if (count <= 0 || count > 100000)
             return [];
 
@@ -282,7 +328,8 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     /// </summary>
     protected virtual AssetImport ReadImport(ArchiveReader archive, string[]? importedPackageNames = null)
     {
-        ulong typeAndId = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong typeAndId))
+            return new AssetImport("Unknown", "Unknown", "");
 
         // Decode type from top 2 bits
         int type = (int)(typeAndId >> 62);
@@ -361,12 +408,20 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
     {
         long startPos = archive.Position;
 
-        ulong cookedSerialOffset = archive.ReadUInt64();
-        ulong cookedSerialSize = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong cookedSerialOffset) ||
+            !archive.TryReadUInt64(out ulong cookedSerialSize))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport("Unknown", 0, 0, -1, false, 0);
+        }
 
         // ObjectName (FMappedName: 8 bytes)
-        uint nameIndexRaw = archive.ReadUInt32();
-        uint extraIndex = archive.ReadUInt32();
+        if (!archive.TryReadUInt32(out uint nameIndexRaw) ||
+            !archive.TryReadUInt32(out uint extraIndex))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport("Unknown", (long)cookedSerialOffset, (long)cookedSerialSize, -1, false, 0);
+        }
 
         uint nameIndex = nameIndexRaw & 0x3FFFFFFF;
         bool isGlobal = nameIndexRaw >> 30 != 0;
@@ -384,26 +439,55 @@ public class ZenPackageMetadataReader : IAssetMetadataReader
         }
 
         // OuterIndex (FPackageObjectIndex: 8 bytes)
-        ulong outerRaw = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong outerRaw))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, -1, false, 0);
+        }
+
         int outerIndex = outerRaw == ~0UL ? -1 : (int)(outerRaw & 0xFFFFFFFF);
 
         // ClassIndex (FPackageObjectIndex: 8 bytes)
-        ulong classRaw = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong classRaw))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, false, 0);
+        }
+
         var classRef = PackageObjectIndex.FromRaw(classRaw);
 
         // SuperIndex (FPackageObjectIndex: 8 bytes)
-        ulong superRaw = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong superRaw))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, false, 0);
+        }
+
         var superRef = PackageObjectIndex.FromRaw(superRaw);
 
         // TemplateIndex (FPackageObjectIndex: 8 bytes)
-        ulong templateRaw = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong templateRaw))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, false, 0);
+        }
+
         var templateRef = PackageObjectIndex.FromRaw(templateRaw);
 
         // PublicExportHash (8 bytes)
-        ulong publicExportHash = archive.ReadUInt64();
+        if (!archive.TryReadUInt64(out ulong publicExportHash))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, false, 0);
+        }
 
         // Read ObjectFlags
-        uint objectFlagsRaw = archive.ReadUInt32();
+        if (!archive.TryReadUInt32(out uint objectFlagsRaw))
+        {
+            archive.Position = startPos + ExportEntrySize;
+            return new AssetExport(objectName, (long)cookedSerialOffset, (long)cookedSerialSize, outerIndex, false, publicExportHash);
+        }
+
         var objectFlags = (EObjectFlags)objectFlagsRaw;
         bool isPublic = (objectFlagsRaw & 1) != 0;
 

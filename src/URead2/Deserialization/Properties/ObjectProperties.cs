@@ -11,16 +11,18 @@ public sealed class ObjectProperty : PropertyValue<ObjectReference>
 {
     public ObjectProperty(ObjectReference reference) => Value = reference;
 
-    public ObjectProperty(ArchiveReader ar, PropertyReadContext context, ReadContext readContext)
+    public static ObjectProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (readContext == ReadContext.Zero)
+        if (readCtx == ReadContext.Zero)
+            return new ObjectProperty(ObjectReference.Null);
+
+        if (!ar.TryReadInt32(out var packageIndex))
         {
-            Value = ObjectReference.Null;
-            return;
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new ObjectProperty(ObjectReference.Null);
         }
 
-        var packageIndex = ar.ReadInt32();
-        Value = context.ResolveReference(packageIndex);
+        return new ObjectProperty(ctx.ResolveReference(packageIndex));
     }
 
     /// <summary>
@@ -71,47 +73,56 @@ public sealed class SoftObjectProperty : PropertyValue<SoftObjectPath>
     /// <summary>
     /// Reads SoftObjectProperty in tagged/versioned format (uses FString).
     /// </summary>
-    public SoftObjectProperty(ArchiveReader ar, ReadContext context)
+    public static SoftObjectProperty CreateTagged(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (context == ReadContext.Zero)
+        if (readCtx == ReadContext.Zero)
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
+
+        if (!ar.TryReadFString(out var assetPath) || !ar.TryReadFString(out var subPath))
         {
-            Value = new SoftObjectPath(null, null);
-            return;
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
         }
 
-        var assetPath = ar.ReadFString();
-        var subPath = ar.ReadFString();
-        Value = new SoftObjectPath(assetPath, subPath);
+        return new SoftObjectProperty(new SoftObjectPath(assetPath, subPath));
     }
 
     /// <summary>
     /// Reads SoftObjectProperty in unversioned format using FTopLevelAssetPath (FName pairs) + SubPath.
     /// </summary>
-    public SoftObjectProperty(ArchiveReader ar, string[] nameTable, ReadContext context)
+    public static SoftObjectProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (context == ReadContext.Zero)
-        {
-            Value = new SoftObjectPath(null, null);
-            return;
-        }
+        if (readCtx == ReadContext.Zero)
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
 
         // FSoftObjectPath in UE5:
         // - FTopLevelAssetPath: PackageName (FMappedName 8 bytes) + AssetName (FMappedName 8 bytes)
         // - SubPathString: FString
 
         // Read FMappedName for PackageName
-        var packageNameRaw = ar.ReadUInt32();
-        var packageNameExtra = ar.ReadUInt32();
+        if (!ar.TryReadUInt32(out var packageNameRaw) || !ar.TryReadUInt32(out var packageNameExtra))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
+        }
         var packageNameIndex = (int)(packageNameRaw & 0x3FFFFFFF);
 
         // Read FMappedName for AssetName
-        var assetNameRaw = ar.ReadUInt32();
-        var assetNameExtra = ar.ReadUInt32();
+        if (!ar.TryReadUInt32(out var assetNameRaw) || !ar.TryReadUInt32(out var assetNameExtra))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
+        }
         var assetNameIndex = (int)(assetNameRaw & 0x3FFFFFFF);
 
         // Read SubPath FString
-        var subPath = ar.ReadFString();
+        if (!ar.TryReadFString(out var subPath))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new SoftObjectProperty(new SoftObjectPath(null, null));
+        }
 
+        var nameTable = ctx.NameTable;
         string? packageName = null;
         string? assetName = null;
 
@@ -136,7 +147,7 @@ public sealed class SoftObjectProperty : PropertyValue<SoftObjectPath>
             fullPath = string.IsNullOrEmpty(assetName) ? packageName : $"{packageName}.{assetName}";
         }
 
-        Value = new SoftObjectPath(fullPath, string.IsNullOrEmpty(subPath) ? null : subPath);
+        return new SoftObjectProperty(new SoftObjectPath(fullPath, string.IsNullOrEmpty(subPath) ? null : subPath));
     }
 }
 
@@ -155,16 +166,18 @@ public sealed class InterfaceProperty : PropertyValue<ObjectReference>
 {
     public InterfaceProperty(ObjectReference reference) => Value = reference;
 
-    public InterfaceProperty(ArchiveReader ar, PropertyReadContext context, ReadContext readContext)
+    public static InterfaceProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (readContext == ReadContext.Zero)
+        if (readCtx == ReadContext.Zero)
+            return new InterfaceProperty(ObjectReference.Null);
+
+        if (!ar.TryReadInt32(out var packageIndex))
         {
-            Value = ObjectReference.Null;
-            return;
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new InterfaceProperty(ObjectReference.Null);
         }
 
-        var packageIndex = ar.ReadInt32();
-        Value = context.ResolveReference(packageIndex);
+        return new InterfaceProperty(ctx.ResolveReference(packageIndex));
     }
 
     public override string? ToString() => Value?.ToString();
@@ -177,18 +190,19 @@ public sealed class DelegateProperty : PropertyValue<DelegateValue>
 {
     public DelegateProperty(DelegateValue value) => Value = value;
 
-    public DelegateProperty(ArchiveReader ar, PropertyReadContext context, ReadContext readContext)
+    public static DelegateProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (readContext == ReadContext.Zero)
-        {
-            Value = default;
-            return;
-        }
+        if (readCtx == ReadContext.Zero)
+            return new DelegateProperty(default);
 
         // Skip reading delegate data - just advance the stream
-        ar.ReadInt32(); // objectIndex
-        ar.ReadFString(); // functionName
-        Value = default;
+        if (!ar.TryReadInt32(out _) || !ar.TryReadFString(out _))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new DelegateProperty(default);
+        }
+
+        return new DelegateProperty(default);
     }
 }
 
@@ -207,25 +221,32 @@ public sealed class MulticastDelegateProperty : PropertyValue<DelegateValue[]>
 {
     public MulticastDelegateProperty(DelegateValue[] value) => Value = value;
 
-    public MulticastDelegateProperty(ArchiveReader ar, PropertyReadContext context, ReadContext readContext)
+    public static MulticastDelegateProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (readContext == ReadContext.Zero)
+        if (readCtx == ReadContext.Zero)
+            return new MulticastDelegateProperty([]);
+
+        if (!ar.TryReadInt32(out var count))
         {
-            Value = [];
-            return;
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new MulticastDelegateProperty([]);
         }
 
-        // Skip reading delegate data - just advance the stream
-        var count = ar.ReadInt32();
         if (count < 0 || count > 10000)
-            throw new InvalidDataException($"MulticastDelegateProperty count out of range: {count}");
+        {
+            ctx.Warn(DiagnosticCode.InvalidCollectionCount, ar.Position - 4, $"MulticastDelegate count={count}");
+            return new MulticastDelegateProperty([]);
+        }
 
         for (int i = 0; i < count; i++)
         {
-            ar.ReadInt32(); // objectIndex
-            ar.ReadFString(); // functionName - must read to advance stream
+            if (!ar.TryReadInt32(out _) || !ar.TryReadFString(out _))
+            {
+                ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+                return new MulticastDelegateProperty([]);
+            }
         }
 
-        Value = [];
+        return new MulticastDelegateProperty([]);
     }
 }

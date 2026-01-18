@@ -1,3 +1,4 @@
+using URead2.Deserialization.Abstractions;
 using URead2.IO;
 
 namespace URead2.Deserialization.Properties;
@@ -9,9 +10,17 @@ public sealed class StrProperty : PropertyValue<string?>
 {
     public StrProperty(string? value) => Value = value;
 
-    public StrProperty(ArchiveReader ar, ReadContext context)
+    public static StrProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        Value = context == ReadContext.Zero ? null : ar.ReadFString();
+        if (readCtx == ReadContext.Zero)
+            return new StrProperty(null);
+
+        if (!ar.TryReadFString(out var value))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new StrProperty(null);
+        }
+        return new StrProperty(value);
     }
 }
 
@@ -22,25 +31,27 @@ public sealed class NameProperty : PropertyValue<string?>
 {
     public NameProperty(string? value) => Value = value;
 
-    public NameProperty(ArchiveReader ar, string[] nameTable, ReadContext context)
+    public static NameProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (context == ReadContext.Zero)
+        if (readCtx == ReadContext.Zero)
+            return new NameProperty(null);
+
+        if (!ar.TryReadInt32(out int index) || !ar.TryReadInt32(out int number))
         {
-            Value = null;
-            return;
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new NameProperty(null);
         }
 
-        int index = ar.ReadInt32();
-        int number = ar.ReadInt32();
-
+        var nameTable = ctx.NameTable;
         if (index < 0 || index >= nameTable.Length)
         {
-            Value = null;
-            return;
+            ctx.Warn(DiagnosticCode.InvalidFNameIndex, ar.Position - 8, $"index={index}");
+            return new NameProperty(null);
         }
 
         var name = nameTable[index];
-        Value = number > 0 ? $"{name}_{number - 1}" : name;
+        var value = number > 0 ? $"{name}_{number - 1}" : name;
+        return new NameProperty(value);
     }
 }
 
@@ -51,29 +62,45 @@ public sealed class TextProperty : PropertyValue<string?>
 {
     public TextProperty(string? value) => Value = value;
 
-    public TextProperty(ArchiveReader ar, ReadContext context)
+    public static TextProperty Create(ArchiveReader ar, PropertyReadContext ctx, ReadContext readCtx)
     {
-        if (context == ReadContext.Zero)
-        {
-            Value = null;
-            return;
-        }
+        if (readCtx == ReadContext.Zero)
+            return new TextProperty(null);
 
         // FText is complex - simplified reading
         // Flags + HistoryType + content varies by type
-        var flags = ar.ReadUInt32();
-        var historyType = ar.ReadByte();
-
-        Value = historyType switch
+        if (!ar.TryReadUInt32(out _) || !ar.TryReadByte(out var historyType))
         {
-            0 => ReadCultureInvariantString(ar), // None - culture invariant
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return new TextProperty(null);
+        }
+
+        var value = historyType switch
+        {
+            0 => ReadCultureInvariantString(ar, ctx), // None - culture invariant
             _ => null // Other types need more complex handling
         };
+
+        return new TextProperty(value);
     }
 
-    private static string? ReadCultureInvariantString(ArchiveReader ar)
+    private static string? ReadCultureInvariantString(ArchiveReader ar, PropertyReadContext ctx)
     {
-        var hasCultureInvariant = ar.ReadInt32() != 0;
-        return hasCultureInvariant ? ar.ReadFString() : null;
+        if (!ar.TryReadInt32(out var hasCultureInvariant))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return null;
+        }
+
+        if (hasCultureInvariant == 0)
+            return null;
+
+        if (!ar.TryReadFString(out var value))
+        {
+            ctx.Fatal(ReadErrorCode.StreamOverrun, ar.Position);
+            return null;
+        }
+
+        return value;
     }
 }

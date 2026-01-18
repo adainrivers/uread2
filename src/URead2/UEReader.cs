@@ -270,7 +270,8 @@ public class UEReader : IDisposable
     /// </summary>
     /// <param name="asset">The asset containing the export.</param>
     /// <param name="export">The export to deserialize.</param>
-    /// <returns>Deserialized properties, or empty bag if deserialization fails.</returns>
+    /// <returns>Deserialized properties with any diagnostics attached.</returns>
+    /// <exception cref="ExportReadException">Thrown when a fatal error occurs during deserialization.</exception>
     public PropertyBag DeserializeExport(AssetGroup asset, AssetExport export)
     {
         var metadata = asset.Metadata;
@@ -283,25 +284,56 @@ public class UEReader : IDisposable
         using var stream = exportData.AsStream();
         using var ar = new ArchiveReader(stream);
 
-        // Check for custom type reader first
-        var customReader = _profile.TypeReaderRegistry.GetReader(export.ClassName);
-        if (customReader != null)
-        {
-            return customReader.Read(ar, context, export);
-        }
+        PropertyBag result;
 
-        // UE serializes ObjectGuid for non-CDO objects before properties
-        // Read and skip the ObjectGuid boolean (and GUID if present)
-        if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
+        try
         {
-            var hasGuid = ar.ReadInt32() != 0;
-            if (hasGuid && ar.Position + 16 <= ar.Length)
+            // Check for custom type reader first
+            var customReader = _profile.TypeReaderRegistry.GetReader(export.ClassName);
+            if (customReader != null)
             {
-                ar.Position += 16; // Skip the 16-byte FGuid
+                result = customReader.Read(ar, context, export);
+            }
+            else
+            {
+                // UE serializes ObjectGuid for non-CDO objects before properties
+                // Read and skip the ObjectGuid boolean (and GUID if present)
+                if (!export.ObjectFlags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
+                {
+                    if (ar.TryReadInt32(out var hasGuidRaw) && hasGuidRaw != 0 && ar.Position + 16 <= ar.Length)
+                    {
+                        ar.Position += 16; // Skip the 16-byte FGuid
+                    }
+                }
+
+                result = _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
             }
         }
+        catch (EndOfStreamException)
+        {
+            // Stream overrun is a structural error - convert to fatal
+            throw new ExportReadException(
+                ReadErrorCode.StreamOverrun,
+                ar.Position,
+                export.Name,
+                asset.BasePath,
+                $"Unexpected end of stream at position {ar.Position}, length {ar.Length}");
+        }
 
-        return _profile.PropertyReader.ReadProperties(ar, context, export.ClassName, metadata.IsUnversioned);
+        // Check for fatal error after reading
+        if (context.HasFatalError)
+        {
+            throw new ExportReadException(
+                context.FatalError!.Value,
+                context.FatalPosition,
+                export.Name,
+                asset.BasePath,
+                context.FatalDetail);
+        }
+
+        // Transfer diagnostics to result
+        result.Diagnostics = context.Diagnostics;
+        return result;
     }
 
     /// <summary>

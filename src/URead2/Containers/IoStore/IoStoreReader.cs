@@ -64,32 +64,46 @@ public class IoStoreReader : IContainerReader
     {
         archive.Seek(0);
 
-        var magic = Encoding.ASCII.GetString(archive.ReadBytes(TocMagicLength));
+        if (!archive.TryReadBytes(TocMagicLength, out var magicBytes))
+            return null;
+
+        var magic = Encoding.ASCII.GetString(magicBytes);
         if (magic != TocMagic)
             return null;
 
-        var version = archive.ReadByte();
-        archive.Skip(HeaderReserved0Size);
-        archive.Skip(HeaderReserved1Size);
-        var headerSize = archive.ReadInt32();
-        var entryCount = archive.ReadInt32();
-        var compressedBlockCount = archive.ReadInt32();
-        var compressedBlockEntrySize = archive.ReadInt32();
-        var compressionMethodCount = archive.ReadInt32();
-        var compressionMethodLength = archive.ReadInt32();
-        var compressionBlockSize = archive.ReadInt32();
-        var directoryIndexSize = archive.ReadInt32();
-        var partitionCount = archive.ReadInt32();
-        var containerId = archive.ReadUInt64();
-        var encryptionKeyGuid = archive.ReadGuid();
-        var containerFlags = archive.ReadByte();
-        archive.Skip(HeaderReserved3Size);
-        archive.Skip(HeaderReserved4Size);
-        var perfectHashSeedsCount = archive.ReadInt32();
-        var partitionSize = archive.ReadUInt64();
-        var chunksWithoutPerfectHashCount = archive.ReadInt32();
-        archive.Skip(HeaderReserved7Size);
-        archive.Skip(HeaderReserved8Size);
+        if (!archive.TryReadByte(out var version))
+            return null;
+
+        if (!archive.TrySkip(HeaderReserved0Size) ||
+            !archive.TrySkip(HeaderReserved1Size))
+            return null;
+
+        if (!archive.TryReadInt32(out var headerSize) ||
+            !archive.TryReadInt32(out var entryCount) ||
+            !archive.TryReadInt32(out var compressedBlockCount) ||
+            !archive.TryReadInt32(out var compressedBlockEntrySize) ||
+            !archive.TryReadInt32(out var compressionMethodCount) ||
+            !archive.TryReadInt32(out var compressionMethodLength) ||
+            !archive.TryReadInt32(out var compressionBlockSize) ||
+            !archive.TryReadInt32(out var directoryIndexSize) ||
+            !archive.TryReadInt32(out var partitionCount) ||
+            !archive.TryReadUInt64(out var containerId) ||
+            !archive.TryReadGuid(out var encryptionKeyGuid) ||
+            !archive.TryReadByte(out var containerFlags))
+            return null;
+
+        if (!archive.TrySkip(HeaderReserved3Size) ||
+            !archive.TrySkip(HeaderReserved4Size))
+            return null;
+
+        if (!archive.TryReadInt32(out var perfectHashSeedsCount) ||
+            !archive.TryReadUInt64(out var partitionSize) ||
+            !archive.TryReadInt32(out var chunksWithoutPerfectHashCount))
+            return null;
+
+        if (!archive.TrySkip(HeaderReserved7Size) ||
+            !archive.TrySkip(HeaderReserved8Size))
+            return null;
 
         var isIndexed = (containerFlags & 0x01) != 0;
         var isEncrypted = (containerFlags & 0x02) != 0;
@@ -113,13 +127,15 @@ public class IoStoreReader : IContainerReader
         archive.Seek(header.HeaderSize);
 
         // Skip chunk IDs
-        archive.Skip(header.EntryCount * ChunkIdSize);
+        if (!archive.TrySkip(header.EntryCount * ChunkIdSize))
+            yield break;
 
         // Read chunk offset/lengths
         var chunkOffsetLengths = new List<(long Offset, long Length)>(header.EntryCount);
         for (var i = 0; i < header.EntryCount; i++)
         {
-            var data = archive.ReadBytes(ChunkOffsetLengthSize);
+            if (!archive.TryReadBytes(ChunkOffsetLengthSize, out var data))
+                yield break;
             var offset = ReadUInt40BE(data, 0);
             var length = ReadUInt40BE(data, 5);
             chunkOffsetLengths.Add((offset, length));
@@ -127,17 +143,25 @@ public class IoStoreReader : IContainerReader
 
         // Skip perfect hash seeds
         if (header.Version >= 4 && header.PerfectHashSeedsCount > 0)
-            archive.Skip(header.PerfectHashSeedsCount * 4);
+        {
+            if (!archive.TrySkip(header.PerfectHashSeedsCount * 4))
+                yield break;
+        }
 
         // Skip chunks without perfect hash
         if (header.Version >= 5 && header.ChunksWithoutPerfectHashCount > 0)
-            archive.Skip(header.ChunksWithoutPerfectHashCount * 4);
+        {
+            if (!archive.TrySkip(header.ChunksWithoutPerfectHashCount * 4))
+                yield break;
+        }
 
         // Read compression blocks
         var compressionBlocks = new List<IoStoreCompressionBlock>(header.CompressedBlockCount);
         for (int i = 0; i < header.CompressedBlockCount; i++)
         {
-            var data = archive.ReadBytes(12);
+            if (!archive.TryReadBytes(12, out var data))
+                yield break;
+
             ulong word0 = BitConverter.ToUInt64(data, 0);
             uint word1 = BitConverter.ToUInt32(data, 8);
 
@@ -152,7 +176,9 @@ public class IoStoreReader : IContainerReader
         var compressionMethods = new List<string> { "None" };
         for (int i = 0; i < header.CompressionMethodCount; i++)
         {
-            var nameBytes = archive.ReadBytes(header.CompressionMethodLength);
+            if (!archive.TryReadBytes(header.CompressionMethodLength, out var nameBytes))
+                yield break;
+
             int nullIndex = Array.IndexOf(nameBytes, (byte)0);
             if (nullIndex < 0) nullIndex = nameBytes.Length;
             if (nullIndex > 0)
@@ -169,8 +195,10 @@ public class IoStoreReader : IContainerReader
         // Skip signing data
         if (header.IsSigned)
         {
-            var hashSize = archive.ReadInt32();
-            archive.Skip(hashSize + hashSize + header.CompressedBlockCount * 20);
+            if (!archive.TryReadInt32(out var hashSize))
+                yield break;
+            if (!archive.TrySkip(hashSize + hashSize + header.CompressedBlockCount * 20))
+                yield break;
         }
 
         // Read directory index (may be encrypted)
@@ -178,35 +206,49 @@ public class IoStoreReader : IContainerReader
 
         try
         {
-            var mountPoint = indexArchive.ReadFString();
+            if (!indexArchive.TryReadFString(out var mountPoint))
+                yield break;
+
             mountPoint = NormalizeMountPoint(mountPoint);
 
-            var dirCount = indexArchive.ReadInt32();
+            if (!indexArchive.TryReadInt32(out var dirCount))
+                yield break;
+
             var directories = new List<(uint NameIdx, uint FirstChild, uint NextSibling, uint FirstFile)>(dirCount);
             for (var i = 0; i < dirCount; i++)
             {
-                var nameIdx = indexArchive.ReadUInt32();
-                var firstChild = indexArchive.ReadUInt32();
-                var nextSibling = indexArchive.ReadUInt32();
-                var firstFile = indexArchive.ReadUInt32();
+                if (!indexArchive.TryReadUInt32(out var nameIdx) ||
+                    !indexArchive.TryReadUInt32(out var firstChild) ||
+                    !indexArchive.TryReadUInt32(out var nextSibling) ||
+                    !indexArchive.TryReadUInt32(out var firstFile))
+                    yield break;
+
                 directories.Add((nameIdx, firstChild, nextSibling, firstFile));
             }
 
-            var fileCount = indexArchive.ReadInt32();
+            if (!indexArchive.TryReadInt32(out var fileCount))
+                yield break;
+
             var files = new List<(uint NameIdx, uint NextFile, uint ChunkIdx)>(fileCount);
             for (var i = 0; i < fileCount; i++)
             {
-                var nameIdx = indexArchive.ReadUInt32();
-                var nextFile = indexArchive.ReadUInt32();
-                var chunkIdx = indexArchive.ReadUInt32();
+                if (!indexArchive.TryReadUInt32(out var nameIdx) ||
+                    !indexArchive.TryReadUInt32(out var nextFile) ||
+                    !indexArchive.TryReadUInt32(out var chunkIdx))
+                    yield break;
+
                 files.Add((nameIdx, nextFile, chunkIdx));
             }
 
-            var stringCount = indexArchive.ReadInt32();
+            if (!indexArchive.TryReadInt32(out var stringCount))
+                yield break;
+
             var strings = new List<string>(stringCount);
             for (var i = 0; i < stringCount; i++)
             {
-                strings.Add(indexArchive.ReadFString());
+                if (!indexArchive.TryReadFString(out var str))
+                    yield break;
+                strings.Add(str);
             }
 
             // Build paths
@@ -233,7 +275,9 @@ public class IoStoreReader : IContainerReader
         Log.Verbose("Decrypting IO Store directory index");
 
         int alignedSize = Crypto.AesDecryptor.Align16(header.DirectoryIndexSize);
-        var encryptedData = archive.ReadBytes(alignedSize);
+        if (!archive.TryReadBytes(alignedSize, out var encryptedData))
+            throw new InvalidDataException("Failed to read encrypted directory index");
+
         var decryptedData = Crypto.AesDecryptor.Decrypt(encryptedData, aesKey);
 
         // Validate decryption by checking mount point length

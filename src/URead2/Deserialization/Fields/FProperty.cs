@@ -112,15 +112,36 @@ public class FProperty : FField
     public string RepNotifyFunc { get; set; } = string.Empty;
     public byte BlueprintReplicationCondition { get; set; }
 
-    public virtual void Deserialize(ArchiveReader ar, FFieldContext context)
+    public virtual bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context.NameTable);
-        ArrayDim = ar.ReadInt32();
-        ElementSize = ar.ReadInt32();
-        PropertyFlags = (EPropertyFlags)ar.ReadUInt64();
-        RepIndex = ar.ReadUInt16();
-        RepNotifyFunc = ReadFName(ar, context.NameTable);
-        BlueprintReplicationCondition = ar.ReadByte();
+        if (!base.Deserialize(ar, context.NameTable))
+            return false;
+
+        if (!ar.TryReadInt32(out var arrayDim))
+            return false;
+        ArrayDim = arrayDim;
+
+        if (!ar.TryReadInt32(out var elementSize))
+            return false;
+        ElementSize = elementSize;
+
+        if (!ar.TryReadUInt64(out var propertyFlags))
+            return false;
+        PropertyFlags = (EPropertyFlags)propertyFlags;
+
+        if (!ar.TryReadUInt16(out var repIndex))
+            return false;
+        RepIndex = repIndex;
+
+        RepNotifyFunc = ReadFName(ar, context.NameTable, out var success);
+        if (!success)
+            return false;
+
+        if (!ar.TryReadByte(out var bpReplicationCondition))
+            return false;
+        BlueprintReplicationCondition = bpReplicationCondition;
+
+        return true;
     }
 
     /// <summary>
@@ -168,15 +189,16 @@ public class FProperty : FField
     /// </summary>
     public static FProperty? ReadSingleField(ArchiveReader ar, FFieldContext context)
     {
-        var typeName = ReadFName(ar, context.NameTable);
-        if (typeName == "None" || string.IsNullOrEmpty(typeName))
+        var typeName = ReadFName(ar, context.NameTable, out var success);
+        if (!success || typeName == "None" || string.IsNullOrEmpty(typeName))
             return null;
 
         var prop = Construct(typeName);
         if (prop != null)
         {
             prop.TypeName = typeName; // Store the original type name
-            prop.Deserialize(ar, context);
+            if (!prop.Deserialize(ar, context))
+                return null;
         }
         return prop;
     }
@@ -186,7 +208,9 @@ public class FProperty : FField
     /// </summary>
     public static FProperty[] ReadPropertyArray(ArchiveReader ar, FFieldContext context)
     {
-        var count = ar.ReadInt32();
+        if (!ar.TryReadInt32(out var count))
+            return [];
+
         if (count <= 0 || count > 65536)
             return [];
 
@@ -209,10 +233,12 @@ public class FArrayProperty : FProperty
 {
     public FProperty? Inner { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
+        if (!base.Deserialize(ar, context))
+            return false;
         Inner = ReadSingleField(ar, context);
+        return true;
     }
 }
 
@@ -226,15 +252,36 @@ public class FBoolProperty : FProperty
     public byte BoolSize { get; set; }
     public bool IsNativeBool { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        FieldSize = ar.ReadByte();
-        ByteOffset = ar.ReadByte();
-        ByteMask = ar.ReadByte();
-        FieldMask = ar.ReadByte();
-        BoolSize = ar.ReadByte();
-        IsNativeBool = ar.ReadByte() != 0;
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadByte(out var fieldSize))
+            return false;
+        FieldSize = fieldSize;
+
+        if (!ar.TryReadByte(out var byteOffset))
+            return false;
+        ByteOffset = byteOffset;
+
+        if (!ar.TryReadByte(out var byteMask))
+            return false;
+        ByteMask = byteMask;
+
+        if (!ar.TryReadByte(out var fieldMask))
+            return false;
+        FieldMask = fieldMask;
+
+        if (!ar.TryReadByte(out var boolSize))
+            return false;
+        BoolSize = boolSize;
+
+        if (!ar.TryReadByte(out var isNativeBool))
+            return false;
+        IsNativeBool = isNativeBool != 0;
+
+        return true;
     }
 }
 
@@ -243,11 +290,15 @@ public class FByteProperty : FProperty
 {
     public string? EnumName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var enumIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var enumIndex))
+            return false;
         EnumName = context.ResolvePackageIndex(enumIndex);
+        return true;
     }
 }
 
@@ -256,11 +307,15 @@ public class FClassProperty : FObjectProperty
 {
     public string? MetaClassName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var metaClassIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var metaClassIndex))
+            return false;
         MetaClassName = context.ResolvePackageIndex(metaClassIndex);
+        return true;
     }
 }
 
@@ -269,11 +324,15 @@ public class FDelegateProperty : FProperty
 {
     public string? SignatureFunctionName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var signatureIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var signatureIndex))
+            return false;
         SignatureFunctionName = context.ResolvePackageIndex(signatureIndex);
+        return true;
     }
 }
 
@@ -283,12 +342,16 @@ public class FEnumProperty : FProperty
     public string? EnumName { get; set; }
     public FProperty? UnderlyingProp { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var enumIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var enumIndex))
+            return false;
         EnumName = context.ResolvePackageIndex(enumIndex);
         UnderlyingProp = ReadSingleField(ar, context);
+        return true;
     }
 }
 
@@ -297,10 +360,13 @@ public class FFieldPathProperty : FProperty
 {
     public string PropertyClass { get; set; } = string.Empty;
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        PropertyClass = ReadFName(ar, context.NameTable);
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        PropertyClass = ReadFName(ar, context.NameTable, out _);
+        return true;
     }
 }
 
@@ -309,11 +375,15 @@ public class FInterfaceProperty : FProperty
 {
     public string? InterfaceClassName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var interfaceIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var interfaceIndex))
+            return false;
         InterfaceClassName = context.ResolvePackageIndex(interfaceIndex);
+        return true;
     }
 }
 
@@ -323,11 +393,13 @@ public class FMapProperty : FProperty
     public FProperty? KeyProp { get; set; }
     public FProperty? ValueProp { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
+        if (!base.Deserialize(ar, context))
+            return false;
         KeyProp = ReadSingleField(ar, context);
         ValueProp = ReadSingleField(ar, context);
+        return true;
     }
 }
 
@@ -336,11 +408,15 @@ public class FMulticastDelegateProperty : FProperty
 {
     public string? SignatureFunctionName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var signatureIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var signatureIndex))
+            return false;
         SignatureFunctionName = context.ResolvePackageIndex(signatureIndex);
+        return true;
     }
 }
 
@@ -352,11 +428,15 @@ public class FObjectProperty : FProperty
 {
     public string? PropertyClassName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var classIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var classIndex))
+            return false;
         PropertyClassName = context.ResolvePackageIndex(classIndex);
+        return true;
     }
 }
 
@@ -365,10 +445,12 @@ public class FSetProperty : FProperty
 {
     public FProperty? ElementProp { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
+        if (!base.Deserialize(ar, context))
+            return false;
         ElementProp = ReadSingleField(ar, context);
+        return true;
     }
 }
 
@@ -377,11 +459,15 @@ public class FSoftClassProperty : FSoftObjectProperty
 {
     public string? MetaClassName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var metaClassIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var metaClassIndex))
+            return false;
         MetaClassName = context.ResolvePackageIndex(metaClassIndex);
+        return true;
     }
 }
 
@@ -393,11 +479,15 @@ public class FStructProperty : FProperty
 {
     public string? StructName { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
-        var structIndex = ar.ReadInt32();
+        if (!base.Deserialize(ar, context))
+            return false;
+
+        if (!ar.TryReadInt32(out var structIndex))
+            return false;
         StructName = context.ResolvePackageIndex(structIndex);
+        return true;
     }
 }
 
@@ -412,9 +502,11 @@ public class FOptionalProperty : FProperty
 {
     public FProperty? ValueProperty { get; set; }
 
-    public override void Deserialize(ArchiveReader ar, FFieldContext context)
+    public override bool Deserialize(ArchiveReader ar, FFieldContext context)
     {
-        base.Deserialize(ar, context);
+        if (!base.Deserialize(ar, context))
+            return false;
         ValueProperty = ReadSingleField(ar, context);
+        return true;
     }
 }
