@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Threading;
 using K4os.Compression.LZ4;
 using OodleDotNet;
 using Serilog;
@@ -16,6 +17,7 @@ public class Decompressor : IDisposable
     private Oodle? _oodle;
     private Zlibng? _zlibng;
     private bool _disposed;
+    private static readonly ThreadLocal<ZstdSharp.Decompressor> _zstdDecompressor = new(() => new ZstdSharp.Decompressor());
 
     public void InitializeOodle(string dllPath)
     {
@@ -123,8 +125,7 @@ public class Decompressor : IDisposable
 
     private static void DecompressZstd(ReadOnlySpan<byte> compressed, Span<byte> uncompressed)
     {
-        using var zstd = new ZstdSharp.Decompressor();
-        zstd.Unwrap(compressed, uncompressed);
+        _zstdDecompressor.Value!.Unwrap(compressed, uncompressed);
     }
 
     public static CompressionMethod ParseMethod(string? methodName)
