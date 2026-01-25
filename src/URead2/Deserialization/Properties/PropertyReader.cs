@@ -118,7 +118,9 @@ public class PropertyReader : IPropertyReader
                 bool isZero = false;
                 if (fragment.HasAnyZeroes)
                 {
-                    isZero = zeroMaskIndex < header.ZeroMask.Length && header.ZeroMask[zeroMaskIndex];
+                    int byteIndex = zeroMaskIndex / 8;
+                    int bitIndex = zeroMaskIndex % 8;
+                    isZero = byteIndex < header.ZeroMask.Length && (header.ZeroMask[byteIndex] & (1 << bitIndex)) != 0;
                     zeroMaskIndex++;
                 }
 
@@ -629,7 +631,9 @@ public class PropertyReader : IPropertyReader
                     bool isZero = false;
                     if (fragment.HasAnyZeroes)
                     {
-                        isZero = zeroMaskIndex < header.ZeroMask.Length && header.ZeroMask[zeroMaskIndex];
+                        int byteIndex = zeroMaskIndex / 8;
+                        int bitIndex = zeroMaskIndex % 8;
+                        isZero = byteIndex < header.ZeroMask.Length && (header.ZeroMask[byteIndex] & (1 << bitIndex)) != 0;
                         zeroMaskIndex++;
                     }
 
@@ -740,7 +744,7 @@ public class PropertyReader : IPropertyReader
             }
         }
 
-        bool[] zeroMask = [];
+        byte[] zeroMask = [];
         if (zeroMaskNum > 0)
         {
             zeroMask = ReadZeroMask(ar, context, zeroMaskNum);
@@ -748,11 +752,23 @@ public class PropertyReader : IPropertyReader
                 return null;
         }
 
-        bool hasNonZeroValues = unmaskedNum > 0 || Array.Exists(zeroMask, z => !z);
+        bool hasNonZeroValues = unmaskedNum > 0 || HasAnyZeroBit(zeroMask, zeroMaskNum);
         return new UnversionedHeader(fragments, zeroMask, hasNonZeroValues);
     }
 
-    protected static bool[] ReadZeroMask(ArchiveReader ar, PropertyReadContext context, int numBits)
+    private static bool HasAnyZeroBit(byte[] mask, int numBits)
+    {
+        for (int i = 0; i < numBits; i++)
+        {
+            int byteIndex = i / 8;
+            int bitIndex = i % 8;
+            if ((mask[byteIndex] & (1 << bitIndex)) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    protected static byte[] ReadZeroMask(ArchiveReader ar, PropertyReadContext context, int numBits)
     {
         int byteCount = numBits <= 8 ? 1 : numBits <= 16 ? 2 : (numBits + 31) / 32 * 4;
 
@@ -762,18 +778,10 @@ public class PropertyReader : IPropertyReader
             return [];
         }
 
-        var mask = new bool[numBits];
-        for (int i = 0; i < numBits; i++)
-        {
-            int byteIndex = i / 8;
-            int bitIndex = i % 8;
-            if (byteIndex < bytes.Length)
-                mask[i] = (bytes[byteIndex] & (1 << bitIndex)) != 0;
-        }
-        return mask;
+        return bytes;
     }
 
-    protected record UnversionedHeader(List<UnversionedFragment> Fragments, bool[] ZeroMask, bool HasNonZeroValues)
+    protected record UnversionedHeader(List<UnversionedFragment> Fragments, byte[] ZeroMask, bool HasNonZeroValues)
     {
         public bool HasValues => HasNonZeroValues || ZeroMask.Length > 0;
     }
