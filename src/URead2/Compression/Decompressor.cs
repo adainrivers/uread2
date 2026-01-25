@@ -85,9 +85,15 @@ public class Decompressor : IDisposable
         }
         else
         {
-            using var srcStream = new MemoryStream(compressed.ToArray());
-            using var zlibStream = new ZLibStream(srcStream, CompressionMode.Decompress);
-            zlibStream.ReadExactly(uncompressed);
+            unsafe
+            {
+                fixed (byte* pCompressed = compressed)
+                {
+                    using var srcStream = new UnmanagedMemoryStream(pCompressed, compressed.Length);
+                    using var zlibStream = new ZLibStream(srcStream, CompressionMode.Decompress);
+                    zlibStream.ReadExactly(uncompressed);
+                }
+            }
         }
     }
 

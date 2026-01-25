@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using System.Buffers;
+using System.IO.Compression;
 using URead2.Compression;
 using URead2.IO;
 
@@ -54,8 +55,10 @@ public class Program
     {
         // Verify correctness before running benchmark
         VerifyCorrectness();
+        VerifyDecompression();
 
-        var summary = BenchmarkRunner.Run<AssetStreamBenchmark>();
+        // var summary = BenchmarkRunner.Run<AssetStreamBenchmark>();
+        var summary = BenchmarkRunner.Run<DecompressorBenchmark>();
     }
 
     private static void VerifyCorrectness()
@@ -78,5 +81,37 @@ public class Program
         {
             benchmark.Cleanup();
         }
+    }
+
+    private static void VerifyDecompression()
+    {
+        Console.WriteLine("Verifying Decompression...");
+        var decompressor = new Decompressor();
+
+        // Generate random data
+        var randomData = new byte[1024];
+        new Random(123).NextBytes(randomData);
+        var uncompressedBuffer = new byte[randomData.Length];
+
+        // Compress it using ZLib
+        using var memoryStream = new MemoryStream();
+        using (var zlibStream = new ZLibStream(memoryStream, CompressionMode.Compress))
+        {
+            zlibStream.Write(randomData, 0, randomData.Length);
+        }
+        var compressedData = memoryStream.ToArray();
+
+        // Decompress using the library
+        decompressor.Decompress(compressedData, uncompressedBuffer, CompressionMethod.Zlib);
+
+        // Verify content
+        for (int i = 0; i < randomData.Length; i++)
+        {
+            if (randomData[i] != uncompressedBuffer[i])
+            {
+                throw new Exception($"Decompression Verification Failed at index {i}. Expected {randomData[i]}, got {uncompressedBuffer[i]}");
+            }
+        }
+        Console.WriteLine("Decompression Verification Passed.");
     }
 }
