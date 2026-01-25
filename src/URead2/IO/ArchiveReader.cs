@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 
@@ -226,25 +227,44 @@ public class ArchiveReader : IDisposable
                 return false;
             }
 
-            var bytes = byteCount <= _buffer.Length
-                ? _buffer.AsSpan(0, byteCount)
-                : new byte[byteCount];
+            byte[]? rented = null;
+            Span<byte> bytes;
 
-            _stream.ReadExactly(bytes);
-
-            // Find null terminator (2-byte aligned for UTF-16)
-            int actualBytes = byteCount;
-            for (int i = 0; i < byteCount - 1; i += 2)
+            if (byteCount <= _buffer.Length)
             {
-                if (bytes[i] == 0 && bytes[i + 1] == 0)
-                {
-                    actualBytes = i;
-                    break;
-                }
+                bytes = _buffer.AsSpan(0, byteCount);
+            }
+            else
+            {
+                rented = ArrayPool<byte>.Shared.Rent(byteCount);
+                bytes = rented.AsSpan(0, byteCount);
             }
 
-            result = Encoding.Unicode.GetString(bytes[..actualBytes]);
-            return true;
+            try
+            {
+                _stream.ReadExactly(bytes);
+
+                // Find null terminator (2-byte aligned for UTF-16)
+                int actualBytes = byteCount;
+                for (int i = 0; i < byteCount - 1; i += 2)
+                {
+                    if (bytes[i] == 0 && bytes[i + 1] == 0)
+                    {
+                        actualBytes = i;
+                        break;
+                    }
+                }
+
+                result = Encoding.Unicode.GetString(bytes[..actualBytes]);
+                return true;
+            }
+            finally
+            {
+                if (rented != null)
+                {
+                    ArrayPool<byte>.Shared.Return(rented);
+                }
+            }
         }
         else
         {
@@ -256,19 +276,38 @@ public class ArchiveReader : IDisposable
                 return false;
             }
 
-            var bytes = length <= _buffer.Length
-                ? _buffer.AsSpan(0, length)
-                : new byte[length];
+            byte[]? rented = null;
+            Span<byte> bytes;
 
-            _stream.ReadExactly(bytes);
+            if (length <= _buffer.Length)
+            {
+                bytes = _buffer.AsSpan(0, length);
+            }
+            else
+            {
+                rented = ArrayPool<byte>.Shared.Rent(length);
+                bytes = rented.AsSpan(0, length);
+            }
 
-            // Find null terminator
-            int actualLength = bytes.IndexOf((byte)0);
-            if (actualLength < 0)
-                actualLength = length;
+            try
+            {
+                _stream.ReadExactly(bytes);
 
-            result = Encoding.UTF8.GetString(bytes[..actualLength]);
-            return true;
+                // Find null terminator
+                int actualLength = bytes.IndexOf((byte)0);
+                if (actualLength < 0)
+                    actualLength = length;
+
+                result = Encoding.UTF8.GetString(bytes[..actualLength]);
+                return true;
+            }
+            finally
+            {
+                if (rented != null)
+                {
+                    ArrayPool<byte>.Shared.Return(rented);
+                }
+            }
         }
     }
 
