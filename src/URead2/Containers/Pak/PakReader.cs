@@ -268,11 +268,13 @@ public class PakReader : IContainerReader
 
         foreach (var (directory, files) in directories)
         {
+            var directoryPath = string.IsNullOrEmpty(directory) ? mountPoint : mountPoint + directory;
+
             foreach (var (fileName, encodedOffset) in files)
             {
                 archive.Position = encodedOffset;
 
-                var path = CombinePaths(mountPoint, directory, fileName);
+                var path = directoryPath + fileName;
                 var entry = DecodeEntry(archive, path, pakFilePath, compressionMethods);
 
                 if (entry != null)
@@ -401,12 +403,5 @@ public class PakReader : IContainerReader
         if (mountPoint.StartsWith("../../../"))
             return mountPoint[9..];
         return mountPoint;
-    }
-
-    private static string CombinePaths(string mountPoint, string directory, string fileName)
-    {
-        if (string.IsNullOrEmpty(directory))
-            return mountPoint + fileName;
-        return mountPoint + directory + fileName;
     }
 }
